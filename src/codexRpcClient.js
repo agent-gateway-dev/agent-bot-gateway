@@ -65,7 +65,7 @@ export class CodexRpcClient extends EventEmitter {
 
     await this.request("initialize", {
       clientInfo: {
-        name: "discord_codex_bridge",
+        name: "codex_discord_bridge",
         title: "Discord Codex Bridge",
         version: "0.1.0"
       },

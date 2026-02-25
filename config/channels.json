@@ -1,7 +1,0 @@
-{
-  "defaultModel": "gpt-5.3-codex",
-  "defaultEffort": "medium",
-  "allowedUserIds": [
-    "123456789012345678"
-  ]
-}

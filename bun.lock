@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "discord-codex-bot",
+      "name": "codex-discord-bridge",
       "dependencies": {
         "discord.js": "^14.20.0",
         "dotenv": "^16.6.1",

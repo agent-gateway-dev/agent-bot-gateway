@@ -28,10 +28,12 @@ const configPath = path.resolve(process.env.CHANNEL_CONFIG_PATH ?? "config/chann
 const statePath = path.resolve(process.env.STATE_PATH ?? "data/state.json");
 const codexBin = process.env.CODEX_BIN ?? "codex";
 const codexHomeEnv = process.env.CODEX_HOME;
+const repoRootEnv = process.env.DISCORD_REPO_ROOT;
+const repoRootPath = repoRootEnv ? path.resolve(repoRootEnv) : null;
 const managedChannelTopicPrefix = "codex-cwd:";
 const managedThreadTopicPrefix = "codex-thread:";
 const approvalButtonPrefix = "approval:";
-const imageCacheDir = path.resolve(process.env.DISCORD_IMAGE_CACHE_DIR ?? "/tmp/discord-codex-bot-images");
+const imageCacheDir = path.resolve(process.env.DISCORD_IMAGE_CACHE_DIR ?? "/tmp/codex-discord-bridge-images");
 const configuredMaxImages = Number(process.env.DISCORD_MAX_IMAGES_PER_MESSAGE ?? 4);
 const maxImagesPerMessage =
   Number.isFinite(configuredMaxImages) && configuredMaxImages > 0 ? Math.floor(configuredMaxImages) : 4;
@@ -43,12 +45,12 @@ const attachmentMaxBytes =
 const attachmentRoots = parsePathListEnv(process.env.DISCORD_ATTACHMENT_ROOTS);
 const attachmentsEnabled = process.env.DISCORD_ENABLE_ATTACHMENTS !== "0";
 const attachmentItemTypes = parseAttachmentItemTypes(process.env.DISCORD_ATTACHMENT_ITEM_TYPES);
+const debugLoggingEnabled = process.env.DISCORD_DEBUG_LOGGING === "1";
 const projectsCategoryName =
   process.env.DISCORD_PROJECTS_CATEGORY_NAME ??
   process.env.DISCORD_LEGACY_CATEGORY_NAME ??
   "codex-projects";
-const enableStreamingEdits = process.env.DISCORD_STREAMING_EDITS === "1";
-const discordMaxMessageLength = 3900;
+const discordMaxMessageLength = 1900;
 const execFileAsync = promisify(execFile);
 const workspaceWritableRootsCache = new Map();
 const extraWritableRoots = parsePathListEnv(process.env.CODEX_EXTRA_WRITABLE_ROOTS);
@@ -180,6 +182,17 @@ async function handleMessage(message) {
   }
 
   const context = resolveRepoContext(message);
+  if (content.startsWith("!")) {
+    const [commandRaw, ...restParts] = content.split(/\s+/);
+    const command = commandRaw.toLowerCase();
+    const rest = restParts.join(" ").trim();
+
+    if (command === "!initrepo") {
+      await handleInitRepoCommand(message, rest);
+      return;
+    }
+  }
+
   if (!context) {
     return;
   }
@@ -388,6 +401,7 @@ async function handleCommand(message, content, context) {
       message,
       [
         "Commands:",
+        "`!initrepo [force]` create/bind repo for this channel using channel name",
         "`!ask <prompt>` send prompt in this repo channel",
         "`!status` show queue/thread status for this channel",
         "`!new` reset Codex thread binding for this channel",
@@ -513,6 +527,65 @@ async function handleCommand(message, content, context) {
   }
 
   await safeReply(message, "Unknown command. Use `!help`.");
+}
+
+async function handleInitRepoCommand(message, rest) {
+  if (message.channel.type !== ChannelType.GuildText) {
+    await safeReply(message, "`!initrepo` is only available in server text channels.");
+    return;
+  }
+  if (!repoRootPath) {
+    await safeReply(message, "Set `DISCORD_REPO_ROOT` in `.env` before using `!initrepo`.");
+    return;
+  }
+
+  const force = rest.toLowerCase() === "force";
+  const repoName = makeChannelName(message.channel.name);
+  const repoPath = path.join(repoRootPath, repoName);
+  const existingSetup = channelSetups[message.channelId];
+
+  if (existingSetup && existingSetup.cwd !== repoPath && !force) {
+    await safeReply(
+      message,
+      `This channel is already bound to \`${existingSetup.cwd}\`. Use \`!initrepo force\` to rebind.`
+    );
+    return;
+  }
+
+  await fs.mkdir(repoRootPath, { recursive: true });
+  const repoExists = await pathExists(repoPath);
+  if (repoExists && !force && (!existingSetup || existingSetup.cwd !== repoPath)) {
+    await safeReply(
+      message,
+      `Repo path already exists: \`${repoPath}\`. Rename channel or run \`!initrepo force\`.`
+    );
+    return;
+  }
+
+  await fs.mkdir(repoPath, { recursive: true });
+  await execFileAsync("git", ["-C", repoPath, "init"], {
+    timeout: 10_000,
+    maxBuffer: 1024 * 1024
+  });
+
+  channelSetups[message.channelId] = {
+    cwd: repoPath,
+    model: config.defaultModel
+  };
+  state.clearBinding(message.channelId);
+  await state.save();
+
+  const nextTopic = upsertTopicTag(message.channel.topic, managedChannelTopicPrefix, repoPath);
+  if (nextTopic !== message.channel.topic) {
+    await message.channel.setTopic(nextTopic).catch((error) => {
+      console.warn(`failed setting channel topic for ${message.channelId}: ${error.message}`);
+    });
+  }
+
+  await safeReply(
+    message,
+    `Initialized repo \`${repoName}\` at \`${repoPath}\` and bound this channel.`
+  );
 }
 
 async function bootstrapChannelMappings(options = {}) {
@@ -951,6 +1024,17 @@ function topicForCwd(cwd) {
   return `${managedChannelTopicPrefix}${cwd}`;
 }
 
+function upsertTopicTag(topic, prefix, value) {
+  const safeValue = String(value ?? "").trim();
+  if (!safeValue) {
+    return typeof topic === "string" ? topic : "";
+  }
+  const lines = typeof topic === "string" && topic.trim() ? topic.split(/\n+/).map((line) => line.trim()) : [];
+  const kept = lines.filter((line) => !line.startsWith(prefix));
+  kept.push(`${prefix}${safeValue}`);
+  return kept.join("\n").trim();
+}
+
 function parseTaggedTopicValue(topic, prefix) {
   if (typeof topic !== "string" || !topic.trim()) {
     return null;
@@ -964,6 +1048,15 @@ function parseTaggedTopicValue(topic, prefix) {
     return value || null;
   }
   return null;
+}
+
+async function pathExists(targetPath) {
+  try {
+    await fs.stat(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function parseCwdFromTopic(topic) {
@@ -1024,6 +1117,24 @@ function isThreadNotFoundError(error) {
   return message.includes("thread not found") || message.includes("unknown thread");
 }
 
+function debugLog(scope, message, details) {
+  if (!debugLoggingEnabled) {
+    return;
+  }
+  if (details === undefined) {
+    console.log(`[debug:${scope}] ${message}`);
+    return;
+  }
+  let serialized = "";
+  try {
+    serialized = JSON.stringify(details);
+  } catch {
+    serialized = String(details);
+  }
+  const trimmed = serialized.length > 1200 ? `${serialized.slice(0, 1200)}...` : serialized;
+  console.log(`[debug:${scope}] ${message} ${trimmed}`);
+}
+
 async function safeReply(message, content) {
   try {
     return await message.reply(content);
@@ -1079,7 +1190,7 @@ async function processQueue(repoChannelId) {
       let threadId = await ensureThreadId(repoChannelId, job.setup);
       startedThreadId = threadId;
 
-      const statusMessage = await safeReply(job.message, `⏳ Thinking... (\`${path.basename(job.setup.cwd)}\`)`);
+      const statusMessage = await safeReply(job.message, "⏳ Thinking...");
       if (!statusMessage) {
         throw new Error("Cannot send response in this channel (channel unavailable).");
       }
@@ -1223,14 +1334,19 @@ function createActiveTurn(threadId, repoChannelId, message, cwd) {
     threadId,
     repoChannelId,
     statusMessage: message,
+    statusMessageId: message.id,
     channel: message.channel,
     cwd: typeof cwd === "string" && cwd ? cwd : null,
     sentAttachmentKeys: new Set(),
-    remainder: "",
     fullText: "",
     seenDelta: false,
-    inCodeFence: false,
-    sentParagraphs: 0,
+    currentStatusLine: "⏳ Thinking...",
+    lastStatusUpdateLine: "",
+    pendingCompletionReactions: new Map(),
+    lastRenderedContent: "",
+    completed: false,
+    failed: false,
+    failureMessage: "",
     itemStatusMessages: new Map(),
     itemStatusQueues: new Map(),
     fileChangeSummary: new Map(),
@@ -1270,8 +1386,8 @@ async function handleNotification({ method, params }) {
     if (!tracker) {
       return;
     }
+    debugLog("item-delta", "agent delta", { threadId, deltaLength: delta.length });
     appendTrackerText(tracker, delta, { fromDelta: true });
-    scheduleFlush(tracker);
     return;
   }
 
@@ -1285,13 +1401,36 @@ async function handleNotification({ method, params }) {
       return;
     }
     const item = params?.item;
+    const state = method === "item/started" ? "started" : "completed";
+    debugLog("item-event", "item lifecycle", {
+      threadId,
+      state,
+      itemType: item?.type,
+      itemId: item?.id ?? null
+    });
 
     if (item?.type === "fileChange" && method === "item/completed") {
       recordFileChanges(tracker, item);
     }
 
     if (shouldAnnounceStatusItem(item?.type)) {
-      await announceItemStatus(tracker, item, method === "item/started" ? "started" : "completed");
+      const statusLine = recordItemStatusLine(item, state);
+      if (statusLine) {
+        const statusMessage = await sendStatusUpdateLine(tracker, statusLine);
+        if (statusMessage) {
+          const key = makeItemStatusKey(item);
+          if (key) {
+            tracker.itemStatusMessages.set(key, statusMessage.id);
+            const pendingEmoji = tracker.pendingCompletionReactions?.get(key);
+            if (pendingEmoji) {
+              tracker.pendingCompletionReactions.delete(key);
+              await reactToStatusMessage(tracker, statusMessage.id, key, pendingEmoji);
+            }
+          }
+        }
+      } else if (state === "completed" && shouldReactOnCompletion(item?.type)) {
+        await reactToStatusCompletion(tracker, item);
+      }
     }
 
     if (method === "item/completed") {
@@ -1306,11 +1445,10 @@ async function handleNotification({ method, params }) {
     if (!messageText) {
       return;
     }
-    if (tracker.seenDelta || tracker.fullText.length > 0 || tracker.remainder.length > 0) {
+    if (tracker.seenDelta || tracker.fullText.length > 0) {
       return;
     }
     appendTrackerText(tracker, messageText, { fromDelta: false });
-    scheduleFlush(tracker);
     return;
   }
 
@@ -1498,7 +1636,7 @@ function buildBestEffortServerRequestResponse(resolvedMethod, originalMethod, pa
 }
 
 function buildUnsupportedToolCallResponse(originalMethod) {
-  const text = "Dynamic tool calls are not supported by discord-codex-bot.";
+  const text = "Dynamic tool calls are not supported by codex-discord-bridge.";
   const modern = {
     contentItems: [{ type: "inputText", text }],
     success: false
@@ -1772,14 +1910,8 @@ async function flushTrackerParagraphs(tracker, { force }) {
   if (!force && !activeTurns.has(tracker.threadId)) {
     return;
   }
-  const consumed = consumeParagraphsFromRemainder(tracker.remainder, tracker.inCodeFence, force);
-  tracker.remainder = consumed.remainder;
-  tracker.inCodeFence = consumed.inCodeFence;
-
-  for (const paragraph of consumed.paragraphs) {
-    await sendChunkedToChannel(tracker.channel, paragraph);
-    tracker.sentParagraphs += 1;
-  }
+  const content = buildTrackerMessageContent(tracker);
+  await editTrackerMessage(tracker, content);
   tracker.lastFlushAt = Date.now();
 }
 
@@ -1797,19 +1929,29 @@ async function finalizeTurn(threadId, error) {
   activeTurns.delete(threadId);
 
   if (error) {
-    await safeSendToChannel(tracker.channel, `❌ ${error.message}`);
+    tracker.failed = true;
+    tracker.completed = true;
+    tracker.failureMessage = error.message;
+    pushStatusLine(tracker, `❌ Error: ${truncateStatusText(error.message, 220)}`);
+    await flushTrackerParagraphs(tracker, { force: true });
     tracker.reject(error);
     return;
   }
 
+  tracker.completed = true;
+  pushStatusLine(tracker, "👍 Tool calling done");
   await flushTrackerParagraphs(tracker, { force: true });
-  const fileChangeSummary = buildFileChangeSummary(tracker);
-  if (tracker.sentParagraphs === 0 && !fileChangeSummary) {
-    await safeSendToChannel(tracker.channel, "_Turn completed with no assistant text._");
+
+  const summaryText = tracker.fullText.trim();
+  if (summaryText) {
+    await sendChunkedToChannel(tracker.channel, summaryText);
   }
-  if (fileChangeSummary) {
-    await sendChunkedToChannel(tracker.channel, fileChangeSummary);
+
+  const diffBlock = buildFileDiffSection(tracker);
+  if (diffBlock) {
+    await sendChunkedToChannel(tracker.channel, diffBlock);
   }
+
   tracker.resolve(tracker.fullText);
 }
 
@@ -1817,7 +1959,6 @@ function appendTrackerText(tracker, text, { fromDelta }) {
   if (!text) {
     return;
   }
-  tracker.remainder += text;
   tracker.fullText += text;
   if (fromDelta) {
     tracker.seenDelta = true;
@@ -1840,6 +1981,296 @@ function shouldAnnounceStatusItem(itemType) {
   return announced.has(itemType);
 }
 
+function recordItemStatusLine(item, state) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+  const lines = summarizeItemForStatus(item, state);
+  if (lines.length === 0) {
+    return null;
+  }
+  const latest = lines[lines.length - 1];
+  return latest;
+}
+
+async function sendStatusUpdateLine(tracker, line) {
+  if (!tracker?.channel || typeof line !== "string" || !line.trim()) {
+    return null;
+  }
+  const normalized = line.trim();
+  tracker.lastStatusUpdateLine = normalized;
+  const message = await safeSendToChannel(tracker.channel, normalized);
+  debugLog("status", "status line sent", {
+    threadId: tracker.threadId,
+    line: normalized
+  });
+  return message;
+}
+
+function makeItemStatusKey(item) {
+  if (!item || typeof item !== "object") {
+    return "";
+  }
+  if (item.id !== undefined && item.id !== null) {
+    const id = String(item.id);
+    if (id) {
+      return `id:${id}`;
+    }
+  }
+  if (item.type === "commandExecution" && typeof item.command === "string" && item.command) {
+    return `cmd:${item.command}`;
+  }
+  if (item.type === "webSearch") {
+    const queries = extractWebSearchDetails(item);
+    if (queries.length > 0) {
+      return `search:${queries[0]}`;
+    }
+  }
+  return "";
+}
+
+function shouldReactOnCompletion(itemType) {
+  return itemType === "commandExecution" || itemType === "webSearch";
+}
+
+async function reactToStatusCompletion(tracker, item) {
+  const key = makeItemStatusKey(item);
+  if (!key) {
+    return;
+  }
+  const emoji = completionReactionEmoji(item);
+  if (!emoji) {
+    return;
+  }
+  const messageId = tracker.itemStatusMessages.get(key);
+  if (!messageId) {
+    tracker.pendingCompletionReactions?.set(key, emoji);
+    return;
+  }
+  await reactToStatusMessage(tracker, messageId, key, emoji);
+}
+
+function completionReactionEmoji(item) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+  if (item.type === "commandExecution") {
+    const exitCode = typeof item.exitCode === "number" ? item.exitCode : null;
+    if (exitCode === 0) {
+      return "✅";
+    }
+    if (exitCode !== null) {
+      return "❌";
+    }
+    return "✅";
+  }
+  if (item.type === "webSearch") {
+    return "✅";
+  }
+  return null;
+}
+
+async function reactToStatusMessage(tracker, messageId, key, emoji) {
+  if (!tracker.channel?.isTextBased?.()) {
+    return;
+  }
+  try {
+    const message = await tracker.channel.messages.fetch(messageId);
+    if (message) {
+      await message.react(emoji);
+    }
+  } catch (error) {
+    debugLog("status", "completion reaction failed", {
+      threadId: tracker.threadId,
+      key,
+      emoji,
+      error: String(error?.message ?? error)
+    });
+  }
+}
+
+function pushStatusLine(tracker, line) {
+  if (!tracker || typeof line !== "string") {
+    return;
+  }
+  const normalized = line.trim();
+  if (!normalized) {
+    return;
+  }
+  if (tracker.currentStatusLine === normalized) {
+    return;
+  }
+  tracker.currentStatusLine = normalized;
+}
+
+function buildTrackerMessageContent(tracker) {
+  return truncateForDiscordMessage(tracker.currentStatusLine || "⏳ Thinking...", discordMaxMessageLength);
+}
+
+async function editTrackerMessage(tracker, content) {
+  if (!tracker?.channel || !content) {
+    return;
+  }
+  if (tracker.lastRenderedContent === content) {
+    return;
+  }
+  const payload = truncateForDiscordMessage(content, discordMaxMessageLength);
+  try {
+    if (tracker.statusMessage) {
+      await tracker.statusMessage.edit(payload);
+      tracker.lastRenderedContent = payload;
+      debugLog("render", "edited status message", { threadId: tracker.threadId, messageId: tracker.statusMessageId });
+      return;
+    }
+  } catch (error) {
+    debugLog("render", "direct edit failed", {
+      threadId: tracker.threadId,
+      messageId: tracker.statusMessageId,
+      error: String(error?.message ?? error)
+    });
+  }
+
+  if (tracker.statusMessageId && tracker.channel?.isTextBased?.()) {
+    try {
+      const fetched = await tracker.channel.messages.fetch(tracker.statusMessageId);
+      if (fetched) {
+        await fetched.edit(payload);
+        tracker.statusMessage = fetched;
+        tracker.lastRenderedContent = payload;
+        debugLog("render", "fetched and edited status message", {
+          threadId: tracker.threadId,
+          messageId: tracker.statusMessageId
+        });
+        return;
+      }
+    } catch (error) {
+      debugLog("render", "fetch/edit fallback failed", {
+        threadId: tracker.threadId,
+        messageId: tracker.statusMessageId,
+        error: String(error?.message ?? error)
+      });
+    }
+  }
+
+  const replacement = await safeSendToChannel(tracker.channel, payload);
+  if (replacement) {
+    tracker.statusMessage = replacement;
+    tracker.statusMessageId = replacement.id;
+    tracker.lastRenderedContent = payload;
+    debugLog("render", "sent replacement status message", { threadId: tracker.threadId, messageId: replacement.id });
+  }
+}
+
+function summarizeItemForStatus(item, state) {
+  if (!item || typeof item !== "object") {
+    return [];
+  }
+  if (item.type === "commandExecution") {
+    const command = truncateStatusText(typeof item.command === "string" ? item.command : "", 140);
+    if (!command) {
+      return [];
+    }
+    if (state === "started") {
+      return [`⚙️ Command: \`${command}\``];
+    }
+    return [];
+  }
+  if (item.type === "webSearch") {
+    const queries = extractWebSearchDetails(item);
+    if (queries.length === 0) {
+      return [];
+    }
+    if (state !== "started") {
+      return [];
+    }
+    const normalized = normalizeSearchLabel(queries[0]);
+    return [`🌍 Search: \`${truncateStatusText(normalized, 140)}\``];
+  }
+  if (item.type === "fileChange" && state === "completed") {
+    const changes = Array.isArray(item.changes) ? item.changes : [item];
+    const lines = [];
+    for (const change of changes) {
+      const entry = extractFileChangeEntry(change);
+      if (!entry) {
+        continue;
+      }
+      lines.push(`File edit: ${path.basename(entry.pathName)} +${entry.added} -${entry.removed}`);
+      if (lines.length >= 4) {
+        break;
+      }
+    }
+    return lines;
+  }
+  if (item.type === "mcpToolCall") {
+    const server = typeof item.server === "string" ? item.server : "server";
+    const tool = typeof item.tool === "string" ? item.tool : "tool";
+    if (state !== "started") {
+      return [];
+    }
+    return [`🛠️ Tool: \`${truncateStatusText(`${server}/${tool}`, 140)}\``];
+  }
+  if (item.type === "imageView") {
+    const fileName = typeof item.path === "string" && item.path ? path.basename(item.path) : "image";
+    return [`🖼️ Image: ${truncateStatusText(fileName, 140)}`];
+  }
+  if (item.type === "contextCompaction" && state === "completed") {
+    return ["🧠 Context compacted"];
+  }
+  return [];
+}
+
+function buildFileDiffSection(tracker) {
+  if (!tracker?.fileChangeSummary || tracker.fileChangeSummary.size === 0) {
+    return "";
+  }
+
+  let totalAdded = 0;
+  let totalRemoved = 0;
+  const lines = [];
+  for (const [pathName, stats] of tracker.fileChangeSummary.entries()) {
+    const added = coerceNonNegativeInt(stats?.added);
+    const removed = coerceNonNegativeInt(stats?.removed);
+    totalAdded += added;
+    totalRemoved += removed;
+    const fileName = path.basename(pathName);
+    lines.push({ fileName, added, removed });
+  }
+  lines.sort((a, b) => `${a.fileName}`.localeCompare(`${b.fileName}`));
+  const maxLines = 10;
+  const visible = lines.slice(0, maxLines);
+  const green = "\u001b[32m";
+  const red = "\u001b[31m";
+  const dim = "\u001b[37m";
+  const reset = "\u001b[0m";
+  const parts = ["```ansi"];
+  parts.push(`${green}📄${reset} ${dim}Files changed:${reset} ${green}+${totalAdded}${reset} ${red}-${totalRemoved}${reset}`);
+  for (const { fileName, added, removed } of visible) {
+    parts.push(`${dim}${fileName}${reset} ${green}+${added}${reset} ${red}-${removed}${reset}`);
+  }
+  if (lines.length > maxLines) {
+    parts.push(`${dim}... ${lines.length - maxLines} more${reset}`);
+  }
+  parts.push("```");
+  return parts.join("\n");
+}
+
+function normalizeSearchLabel(raw) {
+  if (typeof raw !== "string") {
+    return "";
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return "";
+  }
+  try {
+    const url = new URL(trimmed);
+    if (url.hostname) {
+      return url.hostname;
+    }
+  } catch {}
+  return trimmed;
+}
+
 function statusLabelForItemType(itemType) {
   const map = {
     commandExecution: "command",
@@ -1853,206 +2284,6 @@ function statusLabelForItemType(itemType) {
     review: "review"
   };
   return map[itemType] ?? itemType.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
-}
-
-function normalizeCommandForFingerprint(command) {
-  if (Array.isArray(command)) {
-    return truncateStatusText(command.join(" "), 200);
-  }
-  if (typeof command === "string") {
-    return truncateStatusText(command, 200);
-  }
-  return "";
-}
-
-function pickItemLabel(item) {
-  const candidates = [item?.name, item?.label, item?.title, item?.path, item?.tool];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string") {
-      const trimmed = candidate.trim();
-      if (trimmed) {
-        return truncateStatusText(trimmed, 200);
-      }
-    }
-  }
-  const command = normalizeCommandForFingerprint(item?.command);
-  return command;
-}
-
-function buildItemFingerprint(item) {
-  if (!item || typeof item !== "object") {
-    return "";
-  }
-  const type = typeof item.type === "string" && item.type ? item.type : "item";
-  if (type === "commandExecution") {
-    const command = normalizeCommandForFingerprint(item.command);
-    return command ? `${type}|${command}` : type;
-  }
-  if (type === "mcpToolCall") {
-    const server = typeof item.server === "string" ? item.server : "server";
-    const tool = typeof item.tool === "string" ? item.tool : "tool";
-    return `${type}|${server}/${tool}`;
-  }
-  if (type === "webSearch") {
-    const queries = extractWebSearchDetails(item);
-    return queries.length ? `${type}|${queries.join("|")}` : type;
-  }
-  if (type === "imageView") {
-    if (typeof item.path === "string" && item.path) {
-      return `${type}|${path.basename(item.path)}`;
-    }
-    return type;
-  }
-  if (type === "collabAgentToolCall" || type === "toolCall") {
-    if (typeof item.tool === "string" && item.tool) {
-      return `${type}|${item.tool}`;
-    }
-    return type;
-  }
-  if (type === "fileChange") {
-    return type;
-  }
-  const label = pickItemLabel(item);
-  return label ? `${type}|${label}` : type;
-}
-
-function getItemStatusKey(tracker, item, state) {
-  if (item && Object.prototype.hasOwnProperty.call(item, "id")) {
-    const rawId = item.id;
-    const normalizedId = rawId === undefined || rawId === null ? "" : String(rawId);
-    if (normalizedId) {
-      return `id:${normalizedId}`;
-    }
-  }
-  const fingerprint = buildItemFingerprint(item);
-  if (!fingerprint) {
-    return `synthetic:${tracker.statusSyntheticCounter++}`;
-  }
-  if (state === "started") {
-    const key = `fp:${fingerprint}:${tracker.statusSyntheticCounter++}`;
-    const queue = tracker.itemStatusQueues.get(fingerprint) ?? [];
-    queue.push(key);
-    tracker.itemStatusQueues.set(fingerprint, queue);
-    return key;
-  }
-  const queue = tracker.itemStatusQueues.get(fingerprint);
-  if (queue && queue.length > 0) {
-    const key = queue.shift();
-    if (queue.length === 0) {
-      tracker.itemStatusQueues.delete(fingerprint);
-    }
-    return key;
-  }
-  return `fp:${fingerprint}`;
-}
-
-async function announceItemStatus(tracker, item, state) {
-  const itemType = typeof item?.type === "string" ? item.type : null;
-  if (!itemType) {
-    return;
-  }
-  const itemKey = getItemStatusKey(tracker, item, state);
-
-  if (state === "started") {
-    if (tracker.itemStatusMessages.has(itemKey)) {
-      return;
-    }
-    const startedText = buildItemStatusText(item, "started");
-    const startedMessage = await safeSendToChannel(tracker.channel, startedText);
-    tracker.itemStatusMessages.set(itemKey, {
-      message: startedMessage,
-      messageId: startedMessage?.id ?? null,
-      startedText
-    });
-    return;
-  }
-
-  const completedText = buildItemStatusText(item, "completed");
-  const existing = tracker.itemStatusMessages.get(itemKey);
-  if (existing?.message) {
-    try {
-      await existing.message.edit(completedText);
-      tracker.itemStatusMessages.delete(itemKey);
-      return;
-    } catch (error) {
-      if (!isChannelUnavailableError(error)) {
-        console.warn(`failed editing status message for item ${itemKey}: ${error.message}`);
-      }
-    }
-  }
-  if (existing?.messageId && tracker.channel?.isTextBased?.()) {
-    try {
-      const fetched = await tracker.channel.messages.fetch(existing.messageId);
-      if (fetched) {
-        await fetched.edit(completedText);
-        tracker.itemStatusMessages.delete(itemKey);
-        return;
-      }
-    } catch (error) {
-      if (!isChannelUnavailableError(error)) {
-        console.warn(`failed fetching status message for item ${itemKey}: ${error.message}`);
-      }
-    }
-  }
-  await safeSendToChannel(tracker.channel, completedText);
-  tracker.itemStatusMessages.delete(itemKey);
-}
-
-function buildItemStatusText(item, state) {
-  const itemType = typeof item?.type === "string" ? item.type : "item";
-  const prefix = state === "started" ? "⚙️" : "✅";
-  const verb = state === "started" ? "started" : "completed";
-  const label = statusLabelForItemType(itemType);
-  const detail = summarizeItemForStatus(item, state);
-  return detail ? `${prefix} ${label} ${verb}: ${detail}` : `${prefix} ${label} ${verb}`;
-}
-
-function summarizeItemForStatus(item, state) {
-  if (!item || typeof item !== "object") {
-    return "";
-  }
-  if (item.type === "commandExecution") {
-    const command = truncateStatusText(typeof item.command === "string" ? item.command : "", 200);
-    const parts = [];
-    if (command) {
-      parts.push(`\`${command}\``);
-    }
-    if (state === "completed") {
-      if (typeof item.exitCode === "number") {
-        parts.push(`exit ${item.exitCode}`);
-      }
-      if (typeof item.status === "string" && item.status && item.status !== "completed") {
-        parts.push(item.status);
-      }
-    }
-    return parts.join(" | ");
-  }
-  if (item.type === "webSearch") {
-    const queries = extractWebSearchDetails(item);
-    return queries.map((query) => `\`${truncateStatusText(query, 180)}\``).join(", ");
-  }
-  if (item.type === "mcpToolCall") {
-    const server = typeof item.server === "string" ? item.server : "server";
-    const tool = typeof item.tool === "string" ? item.tool : "tool";
-    return `\`${server}/${tool}\``;
-  }
-  if (item.type === "fileChange") {
-    const changeCount = Array.isArray(item.changes) ? item.changes.length : 0;
-    return `${changeCount} file${changeCount === 1 ? "" : "s"}`;
-  }
-  if (item.type === "imageView") {
-    if (typeof item.path === "string" && item.path) {
-      return `\`${path.basename(item.path)}\``;
-    }
-    return "";
-  }
-  if (item.type === "collabAgentToolCall") {
-    if (typeof item.tool === "string" && item.tool) {
-      return `\`${item.tool}\``;
-    }
-    return "";
-  }
-  return "";
 }
 
 function pickFirstString(...values) {
@@ -2225,10 +2456,11 @@ function truncateStatusText(text, limit) {
   if (typeof text !== "string") {
     return "";
   }
-  if (text.length <= limit) {
-    return text;
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  if (oneLine.length <= limit) {
+    return oneLine;
   }
-  return `${text.slice(0, Math.max(1, limit - 3))}...`;
+  return `${oneLine.slice(0, Math.max(1, limit - 3))}...`;
 }
 
 function truncateForDiscordMessage(text, limit = discordMaxMessageLength) {
@@ -2386,6 +2618,7 @@ async function maybeSendAttachmentsForItem(tracker, item) {
 
 function extractAttachmentPaths(item) {
   const paths = [];
+  const pathLikeKeys = new Set(["path", "file", "filename", "name", "outputPath", "artifactPath"]);
   const add = (value) => {
     if (typeof value !== "string") {
       return;
@@ -2400,6 +2633,8 @@ function extractAttachmentPaths(item) {
   add(item.file);
   add(item.filename);
   add(item.name);
+  add(item.outputPath);
+  add(item.artifactPath);
 
   if (Array.isArray(item.paths)) {
     for (const value of item.paths) {
@@ -2416,6 +2651,40 @@ function extractAttachmentPaths(item) {
         add(entry.file);
         add(entry.name);
         add(entry.filename);
+      }
+    }
+  }
+
+  // Pick up nested path values from result payloads (e.g., tool outputs).
+  const queue = [{ value: item, depth: 0 }];
+  const seen = new Set();
+  while (queue.length > 0 && paths.length < 64) {
+    const current = queue.shift();
+    if (!current || current.depth > 3) {
+      continue;
+    }
+    const { value, depth } = current;
+    if (!value || typeof value !== "object") {
+      continue;
+    }
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        queue.push({ value: entry, depth: depth + 1 });
+      }
+      continue;
+    }
+
+    for (const [key, entry] of Object.entries(value)) {
+      if (pathLikeKeys.has(key) && typeof entry === "string") {
+        add(entry);
+      }
+      if (entry && typeof entry === "object") {
+        queue.push({ value: entry, depth: depth + 1 });
       }
     }
   }
@@ -2439,9 +2708,15 @@ async function sendAttachmentForPath(tracker, filePath, { itemType, itemId } = {
     return;
   }
 
+  const resolvedInputPath = path.isAbsolute(trimmed)
+    ? trimmed
+    : typeof tracker?.cwd === "string" && tracker.cwd
+      ? path.resolve(tracker.cwd, trimmed)
+      : path.resolve(trimmed);
+
   let realPath;
   try {
-    realPath = await fs.realpath(trimmed);
+    realPath = await fs.realpath(resolvedInputPath);
   } catch {
     await safeSendToChannel(tracker.channel, `Attachment missing: \`${path.basename(trimmed)}\``);
     return;

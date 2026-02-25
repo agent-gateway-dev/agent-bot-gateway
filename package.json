@@ -1,12 +1,13 @@
 {
-  "name": "discord-codex-bot",
+  "name": "codex-discord-bridge",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Discord bridge for Codex app-server",
   "packageManager": "bun@1.2.5",
   "scripts": {
-    "start": "bun run src/index.js"
+    "start": "bun run src/index.js",
+    "scan:secrets": "bash ./scripts/scan-secrets.sh"
   },
   "dependencies": {
     "discord.js": "^14.20.0",

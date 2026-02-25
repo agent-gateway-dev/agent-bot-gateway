@@ -1,4 +1,6 @@
-# Discord Codex Bot
+# Codex Discord Bridge
+
+[![Codex Discord Bridge Hero](public/images/cover_2.png)](https://youtu.be/w1mGVW2mk5c)
 
 Personal Discord bridge for Codex app-server.
 
@@ -60,6 +62,7 @@ On startup, the bot:
 ## Commands
 
 - `!ask <prompt>` send a prompt in the current repo channel
+- `!initrepo [force]` initialize/bind this channel to a local repo path using the channel name
 - `!status` show queue and binding state
 - `!new` clear stored Codex thread binding for the current channel
 - `!interrupt` request turn interruption for the current channel
@@ -71,11 +74,13 @@ On startup, the bot:
 - `!rebuild` destructive rebuild: delete managed channels/bindings and recreate project channels from discovery
 - Plain message in a managed repo channel is treated as a prompt
 
+
 ## Notes
 
 - This bot uses `codex app-server` over `stdio` and sends `initialize` + `initialized`.
 - `config/channels.json` is optional. Use it for overrides like `defaultModel`, `defaultEffort`, `allowedUserIds`, or fixed channel mappings.
 - `DISCORD_ALLOWED_USER_IDS` (comma-separated) overrides `channels.json` and is recommended for strict access control.
+- `DISCORD_REPO_ROOT` sets where `!initrepo` creates repos (channel-name folder under this root).
 - `CODEX_APPROVAL_POLICY` controls write/command approval prompts. Defaults to `never` in this bot (`untrusted`, `on-failure`, `on-request`, `never`).
 - `CODEX_SANDBOX_MODE` controls sandbox mode. Defaults to `workspace-write` in this bot (`read-only`, `workspace-write`, `danger-full-access`).
 - In `workspace-write`, the bot now auto-adds Git metadata roots (`--git-dir`, `--git-common-dir`) to writable roots so commits work in worktrees too.
@@ -87,3 +92,4 @@ On startup, the bot:
 - `DISCORD_ATTACHMENT_MAX_BYTES` caps attachment size (default: 8MB).
 - `DISCORD_ATTACHMENT_ROOTS` (colon-separated absolute paths) allowlists attachment file locations.
 - `DISCORD_ATTACHMENT_ITEM_TYPES` (comma-separated) sets which item types upload files (default: `imageView`).
+- `DISCORD_DEBUG_LOGGING=1` enables detailed turn/item/message-edit debug logs.
