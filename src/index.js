@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { execFile } from "node:child_process";
@@ -33,6 +34,12 @@ const repoRootPath = repoRootEnv ? path.resolve(repoRootEnv) : null;
 const managedChannelTopicPrefix = "codex-cwd:";
 const managedThreadTopicPrefix = "codex-thread:";
 const approvalButtonPrefix = "approval:";
+const generalChannelId = String(process.env.DISCORD_GENERAL_CHANNEL_ID ?? "").trim();
+const generalChannelName = String(process.env.DISCORD_GENERAL_CHANNEL_NAME ?? "general")
+  .trim()
+  .toLowerCase();
+const generalChannelDefaultCwd = path.join(os.tmpdir(), "codex-discord-bridge", "general");
+const generalChannelCwd = path.resolve(process.env.DISCORD_GENERAL_CWD ?? generalChannelDefaultCwd);
 const imageCacheDir = path.resolve(process.env.DISCORD_IMAGE_CACHE_DIR ?? "/tmp/codex-discord-bridge-images");
 const configuredMaxImages = Number(process.env.DISCORD_MAX_IMAGES_PER_MESSAGE ?? 4);
 const maxImagesPerMessage =
@@ -115,6 +122,9 @@ discord.on("interactionCreate", (interaction) => {
 });
 
 await codex.start();
+await fs.mkdir(generalChannelCwd, { recursive: true }).catch((error) => {
+  console.warn(`failed to ensure general cwd at ${generalChannelCwd}: ${error.message}`);
+});
 await discord.login(discordToken);
 await discord.application?.fetch().catch(() => null);
 await waitForDiscordReady(discord);
@@ -202,7 +212,7 @@ async function handleMessage(message) {
     return;
   }
 
-  const inputItems = await buildTurnInputFromMessage(message, content, imageAttachments);
+  const inputItems = await buildTurnInputFromMessage(message, content, imageAttachments, context.setup);
   if (inputItems.length === 0) {
     return;
   }
@@ -296,16 +306,34 @@ function isImageAttachment(attachment) {
   return /\.(png|jpe?g|webp|gif|bmp|tiff?|svg)$/.test(name);
 }
 
-async function buildTurnInputFromMessage(message, text, imageAttachments) {
+async function buildTurnInputFromMessage(message, text, imageAttachments, setup = null) {
   const inputItems = [];
   const trimmed = typeof text === "string" ? text.trim() : "";
   if (trimmed) {
-    inputItems.push({ type: "text", text: trimmed });
+    inputItems.push({ type: "text", text: formatInputTextForSetup(trimmed, setup) });
   }
 
   const localImages = await downloadImageAttachments(imageAttachments, message.id);
   inputItems.push(...localImages);
   return inputItems;
+}
+
+function formatInputTextForSetup(text, setup) {
+  const trimmed = typeof text === "string" ? text.trim() : "";
+  if (!trimmed) {
+    return "";
+  }
+  if (setup?.mode !== "general") {
+    return trimmed;
+  }
+  return [
+    "[Channel context: #general]",
+    "Treat this channel as informational Q&A and general conversation.",
+    "Do not assume repo work, file edits, or tool/command execution unless explicitly requested.",
+    "Ignore local cwd/repo context unless the user explicitly asks for it.",
+    "",
+    trimmed
+  ].join("\n");
 }
 
 async function downloadImageAttachments(attachments, messageId) {
@@ -382,13 +410,40 @@ function resolveRepoContext(message) {
 
   const setup = channelSetups[message.channelId];
   if (!setup) {
-    return null;
+    if (!isGeneralChannel(message.channel)) {
+      return null;
+    }
+    return {
+      repoChannelId: message.channelId,
+      setup: {
+        cwd: generalChannelCwd,
+        model: config.defaultModel,
+        mode: "general",
+        sandboxMode: "read-only",
+        allowFileWrites: false
+      }
+    };
   }
 
   return {
     repoChannelId: message.channelId,
-    setup
+    setup: {
+      ...setup,
+      mode: "repo",
+      sandboxMode: config.sandboxMode,
+      allowFileWrites: true
+    }
   };
+}
+
+function isGeneralChannel(channel) {
+  if (channel?.type !== ChannelType.GuildText) {
+    return false;
+  }
+  if (generalChannelId) {
+    return channel.id === generalChannelId;
+  }
+  return channel.name.toLowerCase() === generalChannelName;
 }
 
 async function handleCommand(message, content, context) {
@@ -413,7 +468,8 @@ async function handleCommand(message, content, context) {
         "`!resync` non-destructive sync with Codex projects",
         "`!rebuild` destructive rebuild of managed channels",
         "Tip: use the Approve/Decline/Cancel buttons on approval messages",
-        "Model: one repo text channel = one persistent Codex thread"
+        "Model: one repo text channel = one persistent Codex thread",
+        "Also supported in #general: plain chat and !commands (read-only, no file writes)"
       ].join("\n")
     );
     return;
@@ -425,7 +481,7 @@ async function handleCommand(message, content, context) {
       await safeReply(message, "Usage: `!ask <prompt>`");
       return;
     }
-    const inputItems = await buildTurnInputFromMessage(message, rest, imageAttachments);
+    const inputItems = await buildTurnInputFromMessage(message, rest, imageAttachments, context.setup);
     if (inputItems.length === 0) {
       await safeReply(message, "No usable text or image attachment found for `!ask`.");
       return;
@@ -444,13 +500,17 @@ async function handleCommand(message, content, context) {
     const binding = state.getBinding(context.repoChannelId);
     const codexThreadId = binding?.codexThreadId ?? null;
     const activeTurn = findActiveTurnByRepoChannel(context.repoChannelId);
+    const sandboxMode = context.setup.sandboxMode ?? config.sandboxMode;
+    const modeLabel = context.setup.mode === "general" ? "general" : "repo channel";
+    const fileWrites = context.setup.allowFileWrites === false ? "disabled" : "enabled";
     await safeReply(
       message,
       [
         `cwd: \`${context.setup.cwd}\``,
-        "mode: repo channel",
+        `mode: ${modeLabel}`,
         `approval policy: \`${config.approvalPolicy}\``,
-        `sandbox mode: \`${config.sandboxMode}\``,
+        `sandbox mode: \`${sandboxMode}\``,
+        `file writes: ${fileWrites}`,
         `codex thread: ${codexThreadId ? `\`${codexThreadId}\`` : "none"}`,
         `queue depth: ${queue.jobs.length}`,
         `active turn: ${activeTurn ? "yes" : "no"}`
@@ -483,15 +543,20 @@ async function handleCommand(message, content, context) {
 
   if (command === "!where") {
     const threadId = state.getBinding(context.repoChannelId)?.codexThreadId;
+    const sandboxMode = context.setup.sandboxMode ?? config.sandboxMode;
+    const modeLabel = context.setup.mode === "general" ? "general" : "repo channel";
+    const fileWrites = context.setup.allowFileWrites === false ? "disabled" : "enabled";
     const lines = [
       `codex bin: \`${codexBin}\``,
       `CODEX_HOME: \`${codexHomeEnv ?? "(unset; codex default path)"}\``,
       `state file: \`${statePath}\``,
       `channel config: \`${configPath}\``,
+      `channel mode: \`${modeLabel}\``,
       `channel cwd: \`${context.setup.cwd}\``,
       `repo channel: \`${context.repoChannelId}\``,
       `approval policy: \`${config.approvalPolicy}\``,
-      `sandbox mode: \`${config.sandboxMode}\``,
+      `sandbox mode: \`${sandboxMode}\``,
+      `file writes: \`${fileWrites}\``,
       `codex thread: ${threadId ? `\`${threadId}\`` : "none"}`
     ];
     await safeReply(message, lines.join("\n"));
@@ -532,6 +597,10 @@ async function handleCommand(message, content, context) {
 async function handleInitRepoCommand(message, rest) {
   if (message.channel.type !== ChannelType.GuildText) {
     await safeReply(message, "`!initrepo` is only available in server text channels.");
+    return;
+  }
+  if (isGeneralChannel(message.channel)) {
+    await safeReply(message, "`!initrepo` is disabled in #general (read-only channel).");
     return;
   }
   if (!repoRootPath) {
@@ -1198,11 +1267,14 @@ async function processQueue(repoChannelId) {
       const model = job.setup.model ?? config.defaultModel;
       const effort = config.defaultEffort;
       const approvalPolicy = config.approvalPolicy;
-      const sandboxPolicy = await buildSandboxPolicyForTurn(config.sandboxMode, job.setup.cwd);
+      const sandboxMode = job.setup.sandboxMode ?? config.sandboxMode;
+      const sandboxPolicy = await buildSandboxPolicyForTurn(sandboxMode, job.setup.cwd);
 
       const runTurn = async (targetThreadId) => {
         startedThreadId = targetThreadId;
-        const turn = createActiveTurn(targetThreadId, repoChannelId, statusMessage, job.setup.cwd);
+        const turn = createActiveTurn(targetThreadId, repoChannelId, statusMessage, job.setup.cwd, {
+          allowFileWrites: job.setup.allowFileWrites !== false
+        });
         turnPromise = turn.promise;
 
         const turnParams = {
@@ -1261,9 +1333,14 @@ async function processQueue(repoChannelId) {
 
 async function ensureThreadId(repoChannelId, setup) {
   const existingBinding = state.getBinding(repoChannelId);
-  const existingThreadId = existingBinding?.codexThreadId ?? null;
+  let existingThreadId = existingBinding?.codexThreadId ?? null;
+  if (existingBinding?.cwd && path.resolve(existingBinding.cwd) !== path.resolve(setup.cwd)) {
+    state.clearBinding(repoChannelId);
+    await state.save();
+    existingThreadId = null;
+  }
   const approvalPolicy = config.approvalPolicy;
-  const sandboxMode = config.sandboxMode;
+  const sandboxMode = setup.sandboxMode ?? config.sandboxMode;
   if (existingThreadId) {
     try {
       const resumeParams = {
@@ -1318,7 +1395,7 @@ async function ensureThreadId(repoChannelId, setup) {
   return threadId;
 }
 
-function createActiveTurn(threadId, repoChannelId, message, cwd) {
+function createActiveTurn(threadId, repoChannelId, message, cwd, options = {}) {
   if (activeTurns.has(threadId)) {
     throw new Error("Turn already active for this thread");
   }
@@ -1337,6 +1414,7 @@ function createActiveTurn(threadId, repoChannelId, message, cwd) {
     statusMessageId: message.id,
     channel: message.channel,
     cwd: typeof cwd === "string" && cwd ? cwd : null,
+    allowFileWrites: options.allowFileWrites !== false,
     sentAttachmentKeys: new Set(),
     fullText: "",
     seenDelta: false,
@@ -1508,6 +1586,11 @@ async function handleServerRequest({ id, method, params }) {
   const channel = await discord.channels.fetch(repoChannelId).catch(() => null);
   if (!channel || !channel.isTextBased()) {
     codex.respond(id, buildFallbackResponseForServerRequest(resolvedMethod, params));
+    return;
+  }
+  if (resolvedMethod === "item/fileChange/requestApproval" && isGeneralChannel(channel)) {
+    await safeSendToChannel(channel, "Declined file change in #general (read-only mode).");
+    codex.respond(id, buildResponseForServerRequest(resolvedMethod, params, "decline"));
     return;
   }
 
