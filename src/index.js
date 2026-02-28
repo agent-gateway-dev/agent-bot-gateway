@@ -21,6 +21,7 @@ import {
   describeToolRequestUserInput,
   parseApprovalButtonCustomId
 } from "./codex/approvalPayloads.js";
+import { normalizeCodexNotification } from "./codex/notificationMapper.js";
 import { createTurnRunner } from "./codex/turnRunner.js";
 import {
   buildTurnRenderPlan,
@@ -1280,9 +1281,11 @@ function abortActiveTurn(threadId, error) {
 }
 
 async function handleNotification({ method, params }) {
-  if (method === "item/agentMessage/delta") {
-    const threadId = extractThreadId(params);
-    const delta = typeof params?.delta === "string" ? params.delta : "";
+  const normalized = normalizeCodexNotification({ method, params });
+
+  if (normalized.kind === "agent_delta") {
+    const threadId = normalized.threadId;
+    const delta = normalized.delta;
     if (!threadId || !delta) {
       return;
     }
@@ -1295,8 +1298,8 @@ async function handleNotification({ method, params }) {
     return;
   }
 
-  if (method === "item/started" || method === "item/completed") {
-    const threadId = extractThreadId(params);
+  if (normalized.kind === "item_lifecycle") {
+    const threadId = normalized.threadId;
     if (!threadId) {
       return;
     }
@@ -1304,8 +1307,8 @@ async function handleNotification({ method, params }) {
     if (!tracker) {
       return;
     }
-    const item = params?.item;
-    const state = method === "item/started" ? "started" : "completed";
+    const item = normalized.item;
+    const state = normalized.state;
     debugLog("item-event", "item lifecycle", {
       threadId,
       state,
@@ -1337,11 +1340,11 @@ async function handleNotification({ method, params }) {
       }
     }
 
-    if (method === "item/completed") {
+    if (state === "completed") {
       await maybeSendAttachmentsForItem(tracker, item);
     }
 
-    if (method === "item/started") {
+    if (state === "started") {
       return;
     }
 
@@ -1356,8 +1359,8 @@ async function handleNotification({ method, params }) {
     return;
   }
 
-  if (method === "turn/completed" || method === "codex/event/task_complete") {
-    const threadId = extractThreadId(params);
+  if (normalized.kind === "turn_completed") {
+    const threadId = normalized.threadId;
     if (!threadId) {
       return;
     }
@@ -1365,9 +1368,9 @@ async function handleNotification({ method, params }) {
     return;
   }
 
-  if (method === "error") {
-    const threadId = extractThreadId(params);
-    const message = params?.error?.message || params?.message || "Codex reported an error";
+  if (normalized.kind === "error") {
+    const threadId = normalized.threadId;
+    const message = normalized.errorMessage;
     if (threadId) {
       await finalizeTurn(threadId, new Error(message));
     }

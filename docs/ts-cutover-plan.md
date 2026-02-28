@@ -212,9 +212,9 @@ Observed patterns and how they compare to us:
 
 ## Phase 4: Discord + Codex Boundary Contracts
 
-- [ ] Define TS interfaces for Codex notifications/server requests.
-- [ ] Define TS interfaces for Discord message/interaction routes.
-- [ ] Create typed mapping layer rather than ad hoc object access.
+- [x] Define TS interfaces for Codex notifications/server requests.
+- [x] Define TS interfaces for Discord message/interaction routes.
+- [x] Create typed mapping layer rather than ad hoc object access.
 
 ## Phase 5: Tests + Reliability Gates
 
@@ -267,6 +267,7 @@ Why this fits sandbox constraints:
 | 2026-02-28 | Only announce attachment failures for high-confidence path refs and explicit user-request/image flows | Prevent `Attachment missing` spam from weak filename-only hints during routine command output | Decided |
 | 2026-02-28 | Cap attachment issue notices per turn and suppress them in read-only/general mode | Keep conversation UX clean while preserving actionable diagnostics in repo channels | Decided |
 | 2026-02-28 | Add renderer verbosity modes (`user`/`ops`/`debug`) with `user` default | Reduce status-line noise by default while preserving operator/developer diagnostics | Decided |
+| 2026-02-28 | Normalize Codex notifications before runtime side effects | Reduce handler complexity and prepare for stricter TS migration boundaries | Decided |
 | 2026-02-28 | Restart control must be host-managed via supervisor + signal files | Sandbox limits prevent reliable direct host process termination | Decided |
 
 ## Open Questions
@@ -302,6 +303,7 @@ Why this fits sandbox constraints:
 - 2026-02-28: Added per-turn attachment issue cap (`DISCORD_MAX_ATTACHMENT_ISSUES_PER_TURN`, default `1`) and forced issue suppression in read-only/general mode (`allowFileWrites=false`) to prevent channel noise.
 - 2026-02-28: Phase 3.5 started: added renderer plan contract (`primaryMessage`, `statusMessages`, `attachments`) and introduced `DISCORD_RENDER_VERBOSITY` with status-item gating (`user` default, `ops`, `debug`).
 - 2026-02-28: Added status-line dedupe (`lastStatusUpdateLine`) to prevent repeated identical lifecycle/status posts in the same turn.
+- 2026-02-28: Phase 4 started: added `src/codex/notificationMapper.js` for normalized Codex notification kinds and introduced TS boundary contracts in `src/types/codex-events.ts` and `src/types/discord-events.ts`.
 
 ## Reference Links
 
