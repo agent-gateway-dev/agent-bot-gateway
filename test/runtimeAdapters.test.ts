@@ -110,6 +110,53 @@ describe("runtime adapters", () => {
     expect(calls.some((entry) => entry.type === "interaction")).toBe(true);
   });
 
+  test("delegates runtime ops, queue, notifications, approvals and render helpers", async () => {
+    const { adapters, calls } = makeAdapters();
+    const message = { id: "msg-1" };
+    const interaction = { id: "ix-1" };
+    const threadId = "thread-1";
+    const channel = { id: "channel-1" };
+
+    adapters.startHeartbeatLoop();
+    await adapters.writeHeartbeatFile();
+    await adapters.requestSelfRestartFromDiscord(message, "manual");
+    await adapters.maybeCompletePendingRestartNotice();
+    expect(adapters.shouldHandleAsSelfRestartRequest("please restart")).toBe(true);
+
+    await adapters.handleMessage(message);
+    await adapters.handleInteraction(interaction);
+
+    expect(adapters.collectImageAttachments(message)).toEqual([{ id: "img" }]);
+    await adapters.buildTurnInputFromMessage(message, "hello", [{ id: "img-1" }], { setup: true });
+    adapters.enqueuePrompt("repo-1", { prompt: "hello" });
+    expect(adapters.getQueue("repo-1")).toEqual(["a"]);
+    expect(adapters.findActiveTurnByRepoChannel("repo-1")).toEqual({ threadId: "thread-1" });
+
+    await adapters.handleNotification({ method: "m", params: { ok: true } });
+    adapters.onTurnReconnectPending(threadId, { retry: true });
+    await adapters.handleServerRequest({ id: "r-1", method: "approve", params: { token: "0001" } });
+    expect(adapters.findLatestPendingApprovalTokenForChannel("repo-1")).toBe("0007");
+    expect(await adapters.applyApprovalDecision("0001", "approve", "@howii")).toEqual({ ok: true });
+    await adapters.finalizeTurn(threadId, null);
+
+    await adapters.maybeSendAttachmentsForItem({ allowFileWrites: true }, { type: "imageView" });
+    await adapters.sendChunkedToChannel(channel, "hello world");
+
+    expect(calls.some((entry) => entry.type === "startHeartbeat")).toBe(true);
+    expect(calls.some((entry) => entry.type === "writeHeartbeat")).toBe(true);
+    expect(calls.some((entry) => entry.type === "restart")).toBe(true);
+    expect(calls.some((entry) => entry.type === "completeNotice")).toBe(true);
+    expect(calls.some((entry) => entry.type === "collect")).toBe(true);
+    expect(calls.some((entry) => entry.type === "buildInput")).toBe(true);
+    expect(calls.some((entry) => entry.type === "enqueue")).toBe(true);
+    expect(calls.some((entry) => entry.type === "notification")).toBe(true);
+    expect(calls.some((entry) => entry.type === "reconnect")).toBe(true);
+    expect(calls.some((entry) => entry.type === "serverRequest")).toBe(true);
+    expect(calls.some((entry) => entry.type === "finalize")).toBe(true);
+    expect(calls.some((entry) => entry.type === "attachments")).toBe(true);
+    expect(calls.some((entry) => entry.type === "sendChunked")).toBe(true);
+  });
+
   test("returns fallback approval result when server runtime is unavailable", async () => {
     const { adapters } = makeAdapters({
       getServerRequestRuntime: () => null
@@ -128,5 +175,28 @@ describe("runtime adapters", () => {
     expect(attachmentCall).toBeDefined();
     const options = (attachmentCall?.payload ?? {}) as Record<string, unknown>;
     expect(options.maxAttachmentIssueMessages).toBe(0);
+  });
+
+  test("falls back safely when runtime services are unavailable", async () => {
+    const { adapters } = makeAdapters({
+      getRuntimeOps: () => null,
+      getTurnRunner: () => null,
+      getNotificationRuntime: () => null,
+      getServerRequestRuntime: () => null
+    });
+
+    adapters.startHeartbeatLoop();
+    await adapters.writeHeartbeatFile();
+    await adapters.requestSelfRestartFromDiscord({ id: "m" }, "test");
+    await adapters.maybeCompletePendingRestartNotice();
+    expect(adapters.shouldHandleAsSelfRestartRequest("restart")).toBe(false);
+    adapters.enqueuePrompt("repo-1", { prompt: "noop" });
+    expect(adapters.getQueue("repo-1")).toBeUndefined();
+    expect(adapters.findLatestPendingApprovalTokenForChannel("repo-1")).toBeNull();
+    expect(adapters.findActiveTurnByRepoChannel("repo-1")).toBeUndefined();
+    await adapters.handleNotification({ method: "noop", params: {} });
+    await adapters.handleServerRequest({ id: "noop", method: "noop", params: {} });
+    adapters.onTurnReconnectPending("thread-1");
+    await adapters.finalizeTurn("thread-1", null);
   });
 });
