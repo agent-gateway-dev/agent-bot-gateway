@@ -16,6 +16,7 @@ import { maybeSendAttachmentsForItem as maybeSendAttachmentsForItemFromService }
 import { createAttachmentInputBuilder } from "./attachments/inputBuilder.js";
 import { createRuntimeOps } from "./app/runtimeOps.js";
 import { createDiscordRuntime } from "./app/discordRuntime.js";
+import { createChannelMessaging } from "./app/channelMessaging.js";
 import { createServerRequestRuntime } from "./approvals/serverRequestRuntime.js";
 import { createBootstrapService } from "./channels/bootstrapService.js";
 import { resolveRepoContext, isGeneralChannel } from "./channels/context.js";
@@ -28,6 +29,13 @@ import {
   parseApprovalButtonCustomId
 } from "./codex/approvalPayloads.js";
 import { normalizeCodexNotification } from "./codex/notificationMapper.js";
+import {
+  extractAgentMessageText,
+  extractThreadId,
+  isThreadNotFoundError,
+  isTransientReconnectErrorMessage
+} from "./codex/eventUtils.js";
+import { createSandboxPolicyResolver } from "./codex/sandboxPolicy.js";
 import { createTurnRunner } from "./codex/turnRunner.js";
 import {
   buildTurnRenderPlan,
@@ -111,7 +119,6 @@ const projectsCategoryName =
   "codex-projects";
 const discordMaxMessageLength = 1900;
 const execFileAsync = promisify(execFile);
-const workspaceWritableRootsCache = new Map();
 const extraWritableRoots = parsePathListEnv(process.env.CODEX_EXTRA_WRITABLE_ROOTS);
 const defaultModel = "gpt-5.3-codex";
 const defaultEffort = "medium";
@@ -136,6 +143,14 @@ const discord = new Client({
 const codex = new CodexRpcClient({
   codexBin
 });
+const channelMessaging = createChannelMessaging({ discord });
+const { safeReply, safeSendToChannel, safeSendToChannelPayload } = channelMessaging;
+const sandboxPolicyResolver = createSandboxPolicyResolver({
+  path,
+  execFileAsync,
+  extraWritableRoots
+});
+const { buildSandboxPolicyForTurn } = sandboxPolicyResolver;
 const turnRecoveryStore = createTurnRecoveryStore({
   fs,
   path,
@@ -472,36 +487,6 @@ function isDiscordMissingPermissionsError(error) {
   );
 }
 
-function isChannelUnavailableError(error) {
-  const code = String(error?.code ?? "");
-  const apiCode = Number(error?.rawError?.code ?? 0);
-  const message = String(error?.message ?? "").toLowerCase();
-  return (
-    code === "ChannelNotCached" ||
-    code === "10003" ||
-    apiCode === 10003 ||
-    message.includes("channel not cached") ||
-    message.includes("unknown channel")
-  );
-}
-
-function isThreadNotFoundError(error) {
-  const message = String(error?.message ?? "").toLowerCase();
-  return message.includes("thread not found") || message.includes("unknown thread");
-}
-
-function isTransientReconnectErrorMessage(message) {
-  const normalized = String(message ?? "").toLowerCase();
-  return (
-    /reconnecting\.\.\.\s*\d+\/\d+/i.test(normalized) ||
-    normalized.includes("temporarily unavailable") ||
-    normalized.includes("connection reset") ||
-    normalized.includes("connection closed") ||
-    normalized.includes("connection lost") ||
-    normalized.includes("econnreset")
-  );
-}
-
 function debugLog(scope, message, details) {
   if (!debugLoggingEnabled) {
     return;
@@ -518,28 +503,6 @@ function debugLog(scope, message, details) {
   }
   const trimmed = serialized.length > 1200 ? `${serialized.slice(0, 1200)}...` : serialized;
   console.log(`[debug:${scope}] ${message} ${trimmed}`);
-}
-
-async function safeReply(message, content) {
-  try {
-    return await message.reply(content);
-  } catch (error) {
-    if (!isChannelUnavailableError(error)) {
-      throw error;
-    }
-    const channel = await discord.channels.fetch(message.channelId).catch(() => null);
-    if (channel && channel.isTextBased()) {
-      try {
-        return await channel.send(content);
-      } catch (sendError) {
-        if (!isChannelUnavailableError(sendError)) {
-          throw sendError;
-        }
-      }
-    }
-    console.warn(`reply dropped in unavailable channel ${message.channelId}`);
-    return null;
-  }
 }
 
 function enqueuePrompt(repoChannelId, job) {
@@ -583,89 +546,6 @@ async function finalizeTurn(threadId, error) {
   await notificationRuntime?.finalizeTurn(threadId, error);
 }
 
-async function buildSandboxPolicyForTurn(mode, cwd) {
-  if (mode === "danger-full-access") {
-    return { type: "dangerFullAccess" };
-  }
-  if (mode === "read-only") {
-    return { type: "readOnly", access: { type: "fullAccess" } };
-  }
-  if (mode === "workspace-write") {
-    const writableRoots = await resolveWorkspaceWritableRoots(cwd);
-    return {
-      type: "workspaceWrite",
-      writableRoots,
-      readOnlyAccess: { type: "fullAccess" },
-      networkAccess: true,
-      excludeTmpdirEnvVar: false,
-      excludeSlashTmp: false
-    };
-  }
-  return null;
-}
-
-async function resolveWorkspaceWritableRoots(cwd) {
-  const key = path.resolve(cwd);
-  const cached = workspaceWritableRootsCache.get(key);
-  if (cached) {
-    return cached;
-  }
-
-  const roots = new Set([key, ...extraWritableRoots]);
-  const gitRoots = await discoverGitWritableRoots(key);
-  for (const root of gitRoots) {
-    roots.add(path.resolve(root));
-  }
-
-  const resolved = [...roots];
-  workspaceWritableRootsCache.set(key, resolved);
-  return resolved;
-}
-
-async function discoverGitWritableRoots(cwd) {
-  try {
-    const { stdout } = await execFileAsync(
-      "git",
-      ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
-      { timeout: 3000, maxBuffer: 1024 * 1024 }
-    );
-    return stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && path.isAbsolute(line));
-  } catch {
-    return [];
-  }
-}
-
-async function safeSendToChannel(channel, text) {
-  if (!channel || !channel.isTextBased()) {
-    return null;
-  }
-  try {
-    return await channel.send(text);
-  } catch (error) {
-    if (!isChannelUnavailableError(error)) {
-      throw error;
-    }
-    return null;
-  }
-}
-
-async function safeSendToChannelPayload(channel, payload) {
-  if (!channel || !channel.isTextBased()) {
-    return null;
-  }
-  try {
-    return await channel.send(payload);
-  } catch (error) {
-    if (!isChannelUnavailableError(error)) {
-      throw error;
-    }
-    return null;
-  }
-}
-
 async function maybeSendAttachmentsForItem(tracker, item) {
   const maxAttachmentIssueMessages = tracker?.allowFileWrites === false ? 0 : attachmentIssueLimitPerTurn;
   await maybeSendAttachmentsForItemFromService(tracker, item, {
@@ -685,43 +565,4 @@ async function maybeSendAttachmentsForItem(tracker, item) {
 
 async function sendChunkedToChannel(channel, text) {
   await sendChunkedToChannelFromRenderer(channel, text, safeSendToChannel, discordMaxMessageLength);
-}
-
-function extractThreadId(params) {
-  if (typeof params?.threadId === "string") {
-    return params.threadId;
-  }
-  if (typeof params?.conversationId === "string") {
-    return params.conversationId;
-  }
-  if (typeof params?.item?.threadId === "string") {
-    return params.item.threadId;
-  }
-  if (typeof params?.turn?.threadId === "string") {
-    return params.turn.threadId;
-  }
-  return null;
-}
-
-function extractAgentMessageText(item) {
-  if (!item || item.type !== "agentMessage") {
-    return "";
-  }
-  if (typeof item.text === "string" && item.text.trim()) {
-    return item.text;
-  }
-  if (Array.isArray(item.content)) {
-    const textParts = [];
-    for (const part of item.content) {
-      if (typeof part === "string") {
-        textParts.push(part);
-        continue;
-      }
-      if (typeof part?.text === "string") {
-        textParts.push(part.text);
-      }
-    }
-    return textParts.join("");
-  }
-  return "";
 }
