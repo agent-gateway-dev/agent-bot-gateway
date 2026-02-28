@@ -73,6 +73,13 @@ const attachmentIssueLimitPerTurn =
     ? Math.floor(configuredAttachmentIssueLimit)
     : 1;
 const renderVerbosity = normalizeRenderVerbosity(process.env.DISCORD_RENDER_VERBOSITY);
+const heartbeatPath = path.resolve(process.env.DISCORD_HEARTBEAT_PATH ?? "data/bridge-heartbeat.json");
+const restartRequestPath = path.resolve(process.env.DISCORD_RESTART_REQUEST_PATH ?? "data/restart-request.json");
+const configuredHeartbeatIntervalMs = Number(process.env.DISCORD_HEARTBEAT_INTERVAL_MS ?? "");
+const heartbeatIntervalMs =
+  Number.isFinite(configuredHeartbeatIntervalMs) && configuredHeartbeatIntervalMs >= 5_000
+    ? Math.floor(configuredHeartbeatIntervalMs)
+    : 30_000;
 const debugLoggingEnabled = process.env.DISCORD_DEBUG_LOGGING === "1";
 const projectsCategoryName =
   process.env.DISCORD_PROJECTS_CATEGORY_NAME ??
@@ -110,6 +117,8 @@ const queues = new Map();
 const activeTurns = new Map();
 const pendingApprovals = new Map();
 let nextApprovalToken = 1;
+const processStartedAt = new Date().toISOString();
+let heartbeatTimer = null;
 const turnRunner = createTurnRunner({
   queues,
   activeTurns,
@@ -168,6 +177,7 @@ try {
 } catch (error) {
   console.error(`channel bootstrap failed: ${error.message}`);
 }
+startHeartbeatLoop();
 
 process.on("SIGINT", () => {
   void shutdown(0);
@@ -177,11 +187,44 @@ process.on("SIGTERM", () => {
 });
 
 async function shutdown(exitCode) {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
   try {
     await codex.stop();
   } catch {}
   discord.destroy();
   process.exit(exitCode);
+}
+
+function startHeartbeatLoop() {
+  void writeHeartbeatFile();
+  heartbeatTimer = setInterval(() => {
+    void writeHeartbeatFile();
+  }, heartbeatIntervalMs);
+  if (typeof heartbeatTimer?.unref === "function") {
+    heartbeatTimer.unref();
+  }
+}
+
+async function writeHeartbeatFile() {
+  try {
+    const payload = {
+      updatedAt: new Date().toISOString(),
+      startedAt: processStartedAt,
+      pid: process.pid,
+      activeTurns: activeTurns.size,
+      pendingApprovals: pendingApprovals.size,
+      restartRequestPath
+    };
+    await fs.mkdir(path.dirname(heartbeatPath), { recursive: true });
+    const tempPath = `${heartbeatPath}.tmp`;
+    await fs.writeFile(tempPath, JSON.stringify(payload, null, 2), "utf8");
+    await fs.rename(tempPath, heartbeatPath);
+  } catch (error) {
+    debugLog("ops", "heartbeat write failed", { message: String(error?.message ?? error) });
+  }
 }
 
 async function handleMessage(message) {

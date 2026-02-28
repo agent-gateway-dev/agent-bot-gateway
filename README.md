@@ -74,6 +74,13 @@ On startup, the bot:
 - `!rebuild` destructive rebuild: delete managed channels/bindings and recreate project channels from discovery
 - Plain message in a managed repo channel is treated as a prompt
 
+## Operator CLI
+
+- `bun run cli status` shows runtime paths, binding count, and heartbeat status.
+- `bun run cli config-validate` validates channel/env config and reports effective defaults.
+- `bun run cli doctor` runs operational diagnostics (token/writable paths/attachment roots).
+- `bun run cli reload [reason]` writes a restart intent file for host-managed supervisors.
+
 
 ## Notes
 
@@ -96,3 +103,6 @@ On startup, the bot:
 - `DISCORD_ATTACHMENT_ITEM_TYPES` (comma-separated) sets which item types upload files (default: `imageView`).
 - `DISCORD_RENDER_VERBOSITY` controls status-line noise (`user` default, `ops`, `debug`).
 - `DISCORD_DEBUG_LOGGING=1` enables detailed turn/item/message-edit debug logs.
+- `DISCORD_HEARTBEAT_PATH` sets the bridge heartbeat file path (default: `data/bridge-heartbeat.json`).
+- `DISCORD_HEARTBEAT_INTERVAL_MS` sets heartbeat write interval (default: `30000`, min effective `5000`).
+- `DISCORD_RESTART_REQUEST_PATH` sets CLI reload signal file path (default: `data/restart-request.json`).

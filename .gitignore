@@ -7,6 +7,8 @@ node_modules/
 
 # Local runtime state
 data/state.json
+data/restart-request.json
+data/bridge-heartbeat.json
 config/channels.json
 *.log
 

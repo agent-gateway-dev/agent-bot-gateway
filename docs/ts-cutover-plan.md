@@ -236,18 +236,18 @@ Approach:
 3. CLI `reload` should create a restart intent signal, not kill the process directly.
 
 Planned commands:
-- [ ] `codex-bridge status`
+- [x] `codex-bridge status`
   - show version, config path, state path, channel count, last heartbeat.
-- [ ] `codex-bridge config validate`
-  - validate env/config with zod; print actionable errors.
-- [ ] `codex-bridge doctor`
+- [x] `codex-bridge config validate`
+  - validate env/config and print actionable errors.
+- [x] `codex-bridge doctor`
   - check token presence, writable roots, attachment roots, channel intents.
-- [ ] `codex-bridge reload`
+- [x] `codex-bridge reload`
   - write restart request file (for example: `data/restart-request.json`) with timestamp + reason.
 
 Restart handshake design:
-- [ ] Bridge emits heartbeat file periodically (for host monitor visibility).
-- [ ] Host supervisor script watches restart-request signal and performs restart externally.
+- [x] Bridge emits heartbeat file periodically (for host monitor visibility).
+- [ ] Host supervisor script watches restart-request signal and performs restart externally. (operator script pending)
 - [ ] Bridge optionally self-exits gracefully when restart request is acknowledged by host marker.
 - [ ] Add backoff/lock to prevent restart loops.
 
@@ -269,6 +269,7 @@ Why this fits sandbox constraints:
 | 2026-02-28 | Cap attachment issue notices per turn and suppress them in read-only/general mode | Keep conversation UX clean while preserving actionable diagnostics in repo channels | Decided |
 | 2026-02-28 | Add renderer verbosity modes (`user`/`ops`/`debug`) with `user` default | Reduce status-line noise by default while preserving operator/developer diagnostics | Decided |
 | 2026-02-28 | Normalize Codex notifications before runtime side effects | Reduce handler complexity and prepare for stricter TS migration boundaries | Decided |
+| 2026-02-28 | Use file-based restart signaling (`data/restart-request.json`) + heartbeat (`data/bridge-heartbeat.json`) for sandbox-safe ops | Enables host-managed restarts without in-sandbox process termination | Decided |
 | 2026-02-28 | Restart control must be host-managed via supervisor + signal files | Sandbox limits prevent reliable direct host process termination | Decided |
 
 ## Open Questions
@@ -309,6 +310,7 @@ Why this fits sandbox constraints:
 - 2026-02-28: Tightened inferred media path regex to stop at whitespace (fixes false captures like `"/tmp/one.png then /tmp/two.png"` and stabilizes last-match inference behavior).
 - 2026-02-28: Added GitHub Actions workflow (`.github/workflows/ci.yml`) for `bun run typecheck` and `bun test` on pushes/PRs.
 - 2026-02-28: Added approval payload unit tests (`test/codex.approvalPayloads.test.ts`) and outbound attachment integration smoke tests (`test/attachments.integration-smoke.test.ts`) including macOS realpath root handling.
+- 2026-02-28: Phase 6 started: implemented operator CLI commands (`status`, `config-validate`, `doctor`, `reload`), added runtime heartbeat writer, and documented env paths for heartbeat/restart signal files.
 
 ## Reference Links
 

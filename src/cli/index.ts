@@ -18,10 +18,10 @@ function printUsage(): void {
       "Usage: bun run src/cli/index.ts <command>",
       "",
       "Commands:",
-      "  status            Show CLI scaffold status",
-      "  reload            Placeholder for host-managed restart request",
-      "  config-validate   Placeholder for config validation",
-      "  doctor            Placeholder for diagnostics"
+      "  status            Show runtime paths, binding count, and heartbeat summary",
+      "  reload [reason]   Write host-managed restart request signal file",
+      "  config-validate   Validate channel/env config",
+      "  doctor            Run operational diagnostics"
     ].join("\n")
   );
 }
