@@ -342,6 +342,7 @@ Why this fits sandbox constraints:
 - 2026-02-28: Split runtime bootstrap into `src/app/bootstrapContext.js` + leaner `src/app/mainRuntime.js` to isolate setup state from orchestration/wiring.
 - 2026-02-28: Split `src/app/buildRuntimes.js` into focused builders (`buildCommandRuntime`, `buildNotificationRuntime`, `buildApprovalRuntime`, `buildDiscordRuntime`) to reduce cross-domain coupling.
 - 2026-02-28: Split runtime bootstrap flow into `loadRuntimeBootstrapConfig` + `buildRuntimeGraph`; `bootstrapContext` now only composes those two steps.
+- 2026-02-28: Extracted runtime process orchestration from `mainRuntime` into `runBridgeProcess`; `mainRuntime` now only composes bootstrap context + process runner.
 
 ## Reference Links
 
