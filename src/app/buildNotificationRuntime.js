@@ -1,33 +1,24 @@
 import { normalizeCodexNotification } from "../codex/notificationMapper.js";
 import { extractAgentMessageText, isTransientReconnectErrorMessage } from "../codex/eventUtils.js";
-import { buildTurnRenderPlan, truncateForDiscordMessage } from "../render/messageRenderer.js";
+import { sanitizeSummaryForDiscord, truncateForDiscordMessage } from "../render/messageRenderer.js";
 import { TURN_PHASE, transitionTurnPhase } from "../turns/lifecycle.js";
 import { createNotificationRuntime } from "../turns/notificationRuntime.js";
-import {
-  buildFileDiffSection,
-  extractWebSearchDetails,
-  recordFileChanges,
-  summarizeItemForStatus,
-  truncateStatusText
-} from "../turns/turnFormatting.js";
+import { buildFileDiffSection, recordFileChanges, truncateStatusText } from "../turns/turnFormatting.js";
 import { normalizeFinalSummaryText } from "../turns/textNormalization.js";
 
 export function buildNotificationRuntime(deps) {
-  const { activeTurns, renderVerbosity, runtimeAdapters, safeSendToChannel, debugLog, turnRecoveryStore, sendChunkedToChannel } = deps;
+  const { activeTurns, runtimeAdapters, safeSendToChannel, debugLog, turnRecoveryStore, sendChunkedToChannel } = deps;
 
   return createNotificationRuntime({
     activeTurns,
-    renderVerbosity,
     TURN_PHASE,
     transitionTurnPhase,
     normalizeCodexNotification,
     extractAgentMessageText,
-    maybeSendAttachmentsForItem: runtimeAdapters.maybeSendAttachmentsForItem,
+    maybeSendInferredAttachmentsFromText: runtimeAdapters.maybeSendInferredAttachmentsFromText,
     recordFileChanges,
-    summarizeItemForStatus,
-    extractWebSearchDetails,
     buildFileDiffSection,
-    buildTurnRenderPlan,
+    sanitizeSummaryForDiscord,
     sendChunkedToChannel,
     normalizeFinalSummaryText,
     truncateStatusText,

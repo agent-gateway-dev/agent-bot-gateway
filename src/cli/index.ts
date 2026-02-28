@@ -3,12 +3,15 @@ import { runConfigValidateCommand } from "./commands/config-validate.js";
 import { runDoctorCommand } from "./commands/doctor.js";
 import { runLogsCommand } from "./commands/logs.js";
 import { runReloadCommand } from "./commands/reload.js";
+import { runStartCommand, runStopCommand } from "./commands/service.js";
 import { runStatusCommand } from "./commands/status.js";
 import type { CliCommand, CliContext } from "../types/events.js";
 
 const commands: Record<string, CliCommand["run"]> = {
   status: runStatusCommand,
   logs: runLogsCommand,
+  start: runStartCommand,
+  stop: runStopCommand,
   reload: runReloadCommand,
   restart: runReloadCommand,
   "config-validate": runConfigValidateCommand,
@@ -23,6 +26,8 @@ function printUsage(): void {
       "Commands:",
       "  status            Show runtime paths, binding count, and heartbeat summary",
       "  logs              Tail active bridge logs (stdout/stderr)",
+      "  start             Start launchd service (bootstrap+enable+kickstart)",
+      "  stop              Stop launchd service (bootout)",
       "  reload [reason]   Write host-managed restart request signal file",
       "  restart [reason]  Alias for reload",
       "  config-validate   Validate channel/env config",

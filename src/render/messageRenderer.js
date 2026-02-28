@@ -1,5 +1,3 @@
-import path from "node:path";
-
 export function normalizeRenderVerbosity(value) {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (normalized === "ops" || normalized === "debug") {
@@ -9,7 +7,7 @@ export function normalizeRenderVerbosity(value) {
 }
 
 export function buildTurnRenderPlan({ summaryText, diffBlock, verbosity = "user" }) {
-  const primaryMessage = redactLocalPathsForDiscord(typeof summaryText === "string" ? summaryText.trim() : "");
+  const primaryMessage = sanitizeSummaryForDiscord(summaryText);
   const statusMessages = [];
   if (typeof diffBlock === "string" && diffBlock.trim()) {
     if (verbosity === "ops" || verbosity === "debug") {
@@ -21,6 +19,10 @@ export function buildTurnRenderPlan({ summaryText, diffBlock, verbosity = "user"
     statusMessages,
     attachments: []
   };
+}
+
+export function sanitizeSummaryForDiscord(text) {
+  return String(text ?? "").trim();
 }
 
 export function truncateForDiscordMessage(text, limit = 1900) {
@@ -44,20 +46,6 @@ export function splitForDiscord(text, limit = 1900) {
     chunks.push(text.slice(offset, offset + limit));
   }
   return chunks;
-}
-
-export function redactLocalPathsForDiscord(text) {
-  if (typeof text !== "string" || !text) {
-    return "";
-  }
-
-  let redacted = text.replace(/\]\(((?:\/|~\/)[^)]+)\)/g, (match, localPath) => `](${path.basename(localPath)})`);
-  redacted = redacted.replace(
-    /(^|[\s([`'"])((?:\/|~\/)[^)\]`'"<>\r\n]+)(?=$|[\s)\]`'",.!?:;])/g,
-    (full, prefix, localPath) => `${prefix}${path.basename(localPath)}`
-  );
-
-  return redacted;
 }
 
 export async function sendChunkedToChannel(channel, text, safeSendToChannel, limit = 1900) {

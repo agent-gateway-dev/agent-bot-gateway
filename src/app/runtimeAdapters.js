@@ -8,6 +8,7 @@ export function createRuntimeAdapters(deps) {
     getRuntimeOps,
     getDiscord,
     maybeSendAttachmentsForItemFromService,
+    maybeSendInferredAttachmentsFromTextFromService,
     sendChunkedToChannelFromRenderer,
     attachmentConfig,
     channelMessagingConfig
@@ -107,6 +108,21 @@ export function createRuntimeAdapters(deps) {
     });
   }
 
+  async function maybeSendInferredAttachmentsFromText(tracker, text) {
+    return (
+      (await maybeSendInferredAttachmentsFromTextFromService(tracker, text, {
+        attachmentsEnabled: attachmentConfig.attachmentsEnabled,
+        attachmentMaxBytes: attachmentConfig.attachmentMaxBytes,
+        attachmentRoots: attachmentConfig.attachmentRoots,
+        imageCacheDir: attachmentConfig.imageCacheDir,
+        statusLabelForItemType: channelMessagingConfig.statusLabelForItemType,
+        safeSendToChannel: channelMessagingConfig.safeSendToChannel,
+        safeSendToChannelPayload: channelMessagingConfig.safeSendToChannelPayload,
+        truncateStatusText: channelMessagingConfig.truncateStatusText
+      })) ?? 0
+    );
+  }
+
   async function sendChunkedToChannel(channel, text) {
     await sendChunkedToChannelFromRenderer(
       channel,
@@ -136,6 +152,7 @@ export function createRuntimeAdapters(deps) {
     findActiveTurnByRepoChannel,
     finalizeTurn,
     maybeSendAttachmentsForItem,
+    maybeSendInferredAttachmentsFromText,
     sendChunkedToChannel
   };
 }

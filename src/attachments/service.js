@@ -30,7 +30,7 @@ export async function maybeSendAttachmentsForItem(tracker, item, context) {
     return;
   }
   const telemetry = ensureAttachmentTelemetry(tracker);
-  telemetry.detected += candidates.length;
+      telemetry.detected += candidates.length;
 
   for (const candidate of candidates) {
     const announceFailures =
@@ -59,6 +59,58 @@ export async function maybeSendAttachmentsForItem(tracker, item, context) {
       }
     );
   }
+}
+
+export async function maybeSendInferredAttachmentsFromText(tracker, text, context) {
+  const {
+    attachmentsEnabled,
+    attachmentMaxBytes,
+    attachmentRoots,
+    imageCacheDir,
+    statusLabelForItemType,
+    safeSendToChannel,
+    safeSendToChannelPayload,
+    truncateStatusText
+  } = context;
+
+  if (!attachmentsEnabled || !tracker?.channel || typeof text !== "string" || !text.trim()) {
+    return 0;
+  }
+
+  const inferred = [...new Set(collectLikelyLocalPathsFromText(text))];
+  if (inferred.length === 0) {
+    return 0;
+  }
+
+  const telemetry = ensureAttachmentTelemetry(tracker);
+  telemetry.detected += inferred.length;
+  let sentCount = 0;
+  for (const imagePath of inferred) {
+    const sent = await sendAttachmentForPath(
+      tracker,
+      imagePath,
+      {
+        itemType: "imageView",
+        announceFailures: false,
+        intent: "inferred_text_fallback"
+      },
+      {
+        attachmentMaxBytes,
+        attachmentRoots,
+        imageCacheDir,
+        statusLabelForItemType,
+        safeSendToChannel,
+        safeSendToChannelPayload,
+        truncateStatusText,
+        maxAttachmentIssueMessages: 0,
+        telemetry
+      }
+    );
+    if (sent) {
+      sentCount += 1;
+    }
+  }
+  return sentCount;
 }
 
 export function extractAttachmentCandidates(item, options = {}) {
@@ -218,8 +270,12 @@ export function collectLikelyLocalPathsFromText(text) {
     return [];
   }
   const found = new Set();
+  const mediaExtPattern = "(?:png|jpe?g|webp|gif|bmp|tiff?|svg|mp4|mov|m4v|webm|mkv|avi|mp3|m4a|wav|flac|aac|ogg)";
   const mediaPathPattern =
-    /(?:^|[\s([`'"])((?:\/|~\/)[^\s)\]`'"<>\r\n]+\.(?:png|jpe?g|webp|gif|bmp|tiff?|svg|mp4|mov|m4v|webm|mkv|avi|mp3|m4a|wav|flac|aac|ogg))(?:$|[\s)\]`'",.!?:;])/gi;
+    new RegExp(
+      String.raw`(?:^|[\s([` + "`'\"" + String.raw`])((?:\/|~\/)[^\s)\]` + "`'\"<>" + String.raw`\r\n]+\.` + mediaExtPattern + String.raw`)(?:$|[\s)\]` + "`'\"" + String.raw`,.!?:;])`,
+      "gi"
+    );
   let match = mediaPathPattern.exec(text);
   while (match) {
     const candidate = String(match[1] ?? "").trim();
@@ -229,21 +285,51 @@ export function collectLikelyLocalPathsFromText(text) {
     match = mediaPathPattern.exec(text);
   }
 
-  const markdownLinkPathPattern = /\]\(((?:\/|~\/)[^)]+)\)/g;
+  const relativeMediaPathPattern =
+    new RegExp(
+      String.raw`(?:^|[\s([` + "`'\"" + String.raw`])((?:(?:\.\.?\/)?[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+\.` +
+        mediaExtPattern +
+        String.raw`)(?:$|[\s)\]` + "`'\"" + String.raw`,.!?:;])`,
+      "gi"
+    );
+  match = relativeMediaPathPattern.exec(text);
+  while (match) {
+    const candidate = String(match[1] ?? "").trim();
+    if (candidate && !/^https?:\/\//i.test(candidate)) {
+      found.add(candidate);
+    }
+    match = relativeMediaPathPattern.exec(text);
+  }
+
+  const markdownLinkPathPattern = /\]\(([^)]+)\)/g;
   match = markdownLinkPathPattern.exec(text);
   while (match) {
     const raw = String(match[1] ?? "").trim();
-    if (/\.(png|jpe?g|webp|gif|bmp|tiff?|svg|mp4|mov|m4v|webm|mkv|avi|mp3|m4a|wav|flac|aac|ogg)$/i.test(raw)) {
+    if (!/^https?:\/\//i.test(raw) && new RegExp(`\\.${mediaExtPattern}$`, "i").test(raw)) {
       found.add(raw);
     }
     match = markdownLinkPathPattern.exec(text);
+  }
+
+  const bareMediaFilenamePattern =
+    new RegExp(
+      String.raw`(?:^|[\s([` + "`'\"" + String.raw`])([A-Za-z0-9._-]+\.` + mediaExtPattern + String.raw`)(?:$|[\s)\]` + "`'\"" + String.raw`,.!?:;])`,
+      "gi"
+    );
+  match = bareMediaFilenamePattern.exec(text);
+  while (match) {
+    const candidate = String(match[1] ?? "").trim();
+    if (candidate) {
+      found.add(candidate);
+    }
+    match = bareMediaFilenamePattern.exec(text);
   }
 
   return [...found];
 }
 
 async function sendAttachmentForPath(tracker, filePath, options = {}, context) {
-  const { itemType, itemId, announceFailures = false } = options;
+  const { itemType, announceFailures = false } = options;
   const {
     attachmentMaxBytes,
     attachmentRoots,
@@ -257,15 +343,15 @@ async function sendAttachmentForPath(tracker, filePath, options = {}, context) {
   } = context;
 
   if (!tracker?.channel) {
-    return;
+    return false;
   }
   if (typeof filePath !== "string" || !filePath.trim()) {
-    return;
+    return false;
   }
   const trimmed = filePath.trim();
   if (!isSupportedMediaPath(trimmed)) {
     telemetry.skipped += 1;
-    return;
+    return false;
   }
   if (/^https?:\/\//i.test(trimmed)) {
     telemetry.failed += 1;
@@ -277,14 +363,23 @@ async function sendAttachmentForPath(tracker, filePath, options = {}, context) {
       maxAttachmentIssueMessages,
       safeSendToChannel
     );
-    return;
+    return false;
   }
 
-  const resolvedInputPath = path.isAbsolute(trimmed)
-    ? trimmed
-    : typeof tracker?.cwd === "string" && tracker.cwd
-      ? path.resolve(tracker.cwd, trimmed)
-      : path.resolve(trimmed);
+  const allowedRoots = resolveAttachmentRoots(tracker, attachmentRoots, imageCacheDir);
+  const resolvedInputPath = await resolveCandidatePath(trimmed, tracker, allowedRoots);
+  if (!resolvedInputPath) {
+    telemetry.failed += 1;
+    await maybeSendAttachmentIssue(
+      tracker,
+      `missing:${trimmed}`,
+      `Attachment missing: \`${path.basename(trimmed)}\``,
+      announceFailures,
+      maxAttachmentIssueMessages,
+      safeSendToChannel
+    );
+    return false;
+  }
 
   let realPath;
   try {
@@ -299,10 +394,9 @@ async function sendAttachmentForPath(tracker, filePath, options = {}, context) {
       maxAttachmentIssueMessages,
       safeSendToChannel
     );
-    return;
+    return false;
   }
 
-  const allowedRoots = resolveAttachmentRoots(tracker, attachmentRoots, imageCacheDir);
   if (!isPathWithinRoots(realPath, allowedRoots)) {
     telemetry.failed += 1;
     await maybeSendAttachmentIssue(
@@ -313,7 +407,7 @@ async function sendAttachmentForPath(tracker, filePath, options = {}, context) {
       maxAttachmentIssueMessages,
       safeSendToChannel
     );
-    return;
+    return false;
   }
 
   let stats;
@@ -329,11 +423,11 @@ async function sendAttachmentForPath(tracker, filePath, options = {}, context) {
       maxAttachmentIssueMessages,
       safeSendToChannel
     );
-    return;
+    return false;
   }
   if (!stats.isFile()) {
     telemetry.skipped += 1;
-    return;
+    return false;
   }
 
   if (stats.size > attachmentMaxBytes) {
@@ -346,13 +440,13 @@ async function sendAttachmentForPath(tracker, filePath, options = {}, context) {
       maxAttachmentIssueMessages,
       safeSendToChannel
     );
-    return;
+    return false;
   }
 
-  const key = itemId ? `${itemId}:${realPath}` : realPath;
+  const key = realPath;
   if (tracker.sentAttachmentKeys?.has(key)) {
     telemetry.skipped += 1;
-    return;
+    return false;
   }
   tracker.sentAttachmentKeys?.add(key);
 
@@ -363,6 +457,120 @@ async function sendAttachmentForPath(tracker, filePath, options = {}, context) {
     files: [{ attachment: realPath, name: path.basename(realPath) }]
   });
   telemetry.uploaded += 1;
+  return true;
+}
+
+async function resolveCandidatePath(trimmed, tracker, allowedRoots) {
+  if (!trimmed) {
+    return null;
+  }
+
+  const expanded = expandUserPath(trimmed);
+  if (path.isAbsolute(expanded)) {
+    return expanded;
+  }
+
+  if (isHighConfidencePathReference(expanded)) {
+    if (typeof tracker?.cwd === "string" && tracker.cwd) {
+      return path.resolve(tracker.cwd, expanded);
+    }
+    return path.resolve(expanded);
+  }
+
+  const roots = [];
+  if (typeof tracker?.cwd === "string" && tracker.cwd) {
+    roots.push(path.resolve(tracker.cwd));
+  }
+  for (const root of allowedRoots) {
+    if (!roots.includes(root)) {
+      roots.push(root);
+    }
+  }
+  const uniqueMatch = await findUniqueFileByBasename(roots, expanded, { maxMatches: 2, maxEntries: 25000 });
+  if (uniqueMatch) {
+    return uniqueMatch;
+  }
+
+  if (typeof tracker?.cwd === "string" && tracker.cwd) {
+    return path.resolve(tracker.cwd, expanded);
+  }
+  return path.resolve(expanded);
+}
+
+function expandUserPath(inputPath) {
+  if (typeof inputPath !== "string") {
+    return "";
+  }
+  if (inputPath.startsWith("~/")) {
+    const home = process.env.HOME || "";
+    if (home) {
+      return path.join(home, inputPath.slice(2));
+    }
+  }
+  return inputPath;
+}
+
+async function findUniqueFileByBasename(roots, basename, options = {}) {
+  if (!Array.isArray(roots) || !basename) {
+    return null;
+  }
+  const maxMatches = Number.isFinite(options.maxMatches) ? Math.max(1, Math.floor(options.maxMatches)) : 2;
+  const maxEntries = Number.isFinite(options.maxEntries) ? Math.max(100, Math.floor(options.maxEntries)) : 25000;
+  const queue = [];
+  const visited = new Set();
+  const matches = [];
+  let scanned = 0;
+
+  for (const root of roots) {
+    if (typeof root !== "string" || !root) {
+      continue;
+    }
+    const resolvedRoot = path.resolve(root);
+    if (visited.has(resolvedRoot)) {
+      continue;
+    }
+    visited.add(resolvedRoot);
+    queue.push(resolvedRoot);
+  }
+
+  while (queue.length > 0 && scanned < maxEntries && matches.length < maxMatches) {
+    const currentDir = queue.shift();
+    let entries;
+    try {
+      entries = await fs.readdir(currentDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      scanned += 1;
+      if (scanned > maxEntries || matches.length >= maxMatches) {
+        break;
+      }
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        const resolvedDir = path.resolve(fullPath);
+        if (!visited.has(resolvedDir)) {
+          visited.add(resolvedDir);
+          queue.push(resolvedDir);
+        }
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      if (entry.name === basename) {
+        matches.push(fullPath);
+        if (matches.length >= maxMatches) {
+          break;
+        }
+      }
+    }
+  }
+
+  if (matches.length !== 1) {
+    return null;
+  }
+  return matches[0];
 }
 
 async function maybeSendAttachmentIssue(tracker, key, message, announce, maxMessages, safeSendToChannel) {

@@ -34,12 +34,12 @@
       }
     ],
     "renderPlanUser": {
-      "primaryMessage": "Done. Preview ![img](final.png) and logs at run.log",
+      "primaryMessage": "Done. Preview and logs at run.log",
       "statusMessages": [],
       "attachments": []
     },
     "renderPlanOps": {
-      "primaryMessage": "Done. Preview ![img](final.png) and logs at run.log",
+      "primaryMessage": "Done. Preview and logs at run.log",
       "statusMessages": [
         "```diff\n+ one line changed\n```"
       ],

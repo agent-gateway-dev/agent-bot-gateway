@@ -72,6 +72,17 @@ function makeAdapters(overrides: Record<string, unknown> = {}) {
     getDiscord: () => ({ id: "discord" }),
     maybeSendAttachmentsForItemFromService: async (_tracker: unknown, _item: unknown, options: Record<string, unknown>) =>
       calls.push({ type: "attachments", payload: options }),
+    maybeSendInferredAttachmentsFromTextFromService: async (
+      trackerInput: unknown,
+      textInput: string,
+      optionsInput: Record<string, unknown>
+    ) => {
+      void trackerInput;
+      void textInput;
+      void optionsInput;
+      calls.push({ type: "summaryImage", payload: null });
+      return 2;
+    },
     sendChunkedToChannelFromRenderer: async (channel: unknown, text: string, safeSend: unknown, limit: number) => {
       void channel;
       void text;
@@ -140,6 +151,7 @@ describe("runtime adapters", () => {
     await adapters.finalizeTurn(threadId, null);
 
     await adapters.maybeSendAttachmentsForItem({ allowFileWrites: true }, { type: "imageView" });
+    expect(await adapters.maybeSendInferredAttachmentsFromText({ allowFileWrites: true }, "/tmp/final.png")).toBe(2);
     await adapters.sendChunkedToChannel(channel, "hello world");
 
     expect(calls.some((entry) => entry.type === "startHeartbeat")).toBe(true);
@@ -154,6 +166,7 @@ describe("runtime adapters", () => {
     expect(calls.some((entry) => entry.type === "serverRequest")).toBe(true);
     expect(calls.some((entry) => entry.type === "finalize")).toBe(true);
     expect(calls.some((entry) => entry.type === "attachments")).toBe(true);
+    expect(calls.some((entry) => entry.type === "summaryImage")).toBe(true);
     expect(calls.some((entry) => entry.type === "sendChunked")).toBe(true);
   });
 

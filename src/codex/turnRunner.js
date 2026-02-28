@@ -277,21 +277,33 @@ export function createTurnRunner(deps) {
       sentAttachmentKeys: new Set(),
       seenAttachmentIssueKeys: new Set(),
       attachmentIssueCount: 0,
+      firstToolCallAt: 0,
+      lastToolCompletedAt: 0,
+      hasToolCall: false,
+      hasSummaryImageAttachment: false,
+      workingMessage: null,
+      workingMessageId: null,
+      workingMessageCreatePromise: null,
+      workingTicker: null,
+      thinkingStartedAt: Date.now(),
+      thinkingTicker: null,
       fullText: "",
       seenDelta: false,
       currentStatusLine: "⏳ Thinking...",
-      lastStatusUpdateLine: "",
-      pendingCompletionReactions: new Map(),
       lastRenderedContent: "",
       completed: false,
       failed: false,
       failureMessage: "",
-      itemStatusMessages: new Map(),
-      itemStatusQueues: new Map(),
       fileChangeSummary: new Map(),
       statusSyntheticCounter: 0,
       flushTimer: null,
       lastFlushAt: 0,
+      lastTurnActivityAt: Date.now(),
+      turnCompletionRequested: false,
+      turnCompletionRequestedAt: 0,
+      turnFinalizeTimer: null,
+      activeLifecycleItemKeys: new Set(),
+      completedLifecycleItemKeys: new Set(),
       finalizing: false,
       resolve: resolveTurn,
       reject: rejectTurn
@@ -311,6 +323,18 @@ export function createTurnRunner(deps) {
     if (tracker.flushTimer) {
       clearTimeout(tracker.flushTimer);
       tracker.flushTimer = null;
+    }
+    if (tracker.turnFinalizeTimer) {
+      clearTimeout(tracker.turnFinalizeTimer);
+      tracker.turnFinalizeTimer = null;
+    }
+    if (tracker.workingTicker) {
+      clearInterval(tracker.workingTicker);
+      tracker.workingTicker = null;
+    }
+    if (tracker.thinkingTicker) {
+      clearInterval(tracker.thinkingTicker);
+      tracker.thinkingTicker = null;
     }
 
     activeTurns.delete(threadId);
@@ -368,7 +392,10 @@ function hasTurnProgress(tracker) {
   if (typeof tracker.fullText === "string" && tracker.fullText.trim().length > 0) {
     return true;
   }
-  if (typeof tracker.currentStatusLine === "string" && tracker.currentStatusLine.trim() !== "⏳ Thinking...") {
+  if (
+    typeof tracker.currentStatusLine === "string" &&
+    !tracker.currentStatusLine.trim().startsWith("⏳ Thinking...")
+  ) {
     return true;
   }
   return false;

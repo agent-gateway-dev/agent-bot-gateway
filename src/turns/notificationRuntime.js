@@ -1,17 +1,16 @@
+import { collectLikelyLocalPathsFromText, extractAttachmentCandidates } from "../attachments/service.js";
+
 export function createNotificationRuntime(deps) {
   const {
     activeTurns,
-    renderVerbosity,
     TURN_PHASE,
     transitionTurnPhase,
     normalizeCodexNotification,
     extractAgentMessageText,
-    maybeSendAttachmentsForItem,
+    maybeSendInferredAttachmentsFromText,
     recordFileChanges,
-    summarizeItemForStatus,
-    extractWebSearchDetails,
     buildFileDiffSection,
-    buildTurnRenderPlan,
+    sanitizeSummaryForDiscord = (text) => String(text ?? "").trim(),
     sendChunkedToChannel,
     normalizeFinalSummaryText,
     truncateStatusText,
@@ -21,7 +20,10 @@ export function createNotificationRuntime(deps) {
     discordMaxMessageLength,
     debugLog,
     writeHeartbeatFile,
-    onTurnFinalized
+    onTurnFinalized,
+    turnCompletionQuietMs = 3000,
+    turnCompletionMaxWaitMs = 12000,
+    reconnectSettleQuietMs = 5000
   } = deps;
 
   async function handleNotification({ method, params }) {
@@ -37,6 +39,8 @@ export function createNotificationRuntime(deps) {
       if (!tracker) {
         return;
       }
+      noteTurnActivity(tracker);
+      await ensureThinkingStage(tracker);
       transitionTurnPhase(tracker, TURN_PHASE.RUNNING);
       debugLog("item-delta", "agent delta", {
         threadId,
@@ -57,10 +61,21 @@ export function createNotificationRuntime(deps) {
       if (!tracker) {
         return;
       }
+      noteTurnActivity(tracker);
       const item = normalized.item;
       const state = normalized.state;
+      updateLifecycleItemState(tracker, item, state);
+      if (isToolCallItemType(item?.type)) {
+        noteToolCallObserved(tracker);
+        await ensureWorkingStage(tracker);
+      }
+      await ensureThinkingStage(tracker);
       if (state === "started") {
         transitionTurnPhase(tracker, TURN_PHASE.RUNNING);
+      }
+
+      if (tracker.turnCompletionRequested) {
+        scheduleTurnFinalizeWhenSettled(threadId, tracker);
       }
       debugLog("item-event", "item lifecycle", {
         threadId,
@@ -75,28 +90,10 @@ export function createNotificationRuntime(deps) {
         recordFileChanges(tracker, item);
       }
 
-      if (shouldAnnounceStatusItem(item?.type, renderVerbosity)) {
-        const statusLine = recordItemStatusLine(item, state);
-        if (statusLine) {
-          const statusMessage = await sendStatusUpdateLine(tracker, statusLine);
-          if (statusMessage) {
-            const key = makeItemStatusKey(item);
-            if (key) {
-              tracker.itemStatusMessages.set(key, statusMessage.id);
-              const pendingEmoji = tracker.pendingCompletionReactions?.get(key);
-              if (pendingEmoji) {
-                tracker.pendingCompletionReactions.delete(key);
-                await reactToStatusMessage(tracker, statusMessage.id, key, pendingEmoji);
-              }
-            }
-          }
-        } else if (state === "completed" && shouldReactOnCompletion(item?.type)) {
-          await reactToStatusCompletion(tracker, item);
-        }
-      }
-
       if (state === "completed") {
-        await maybeSendAttachmentsForItem(tracker, item);
+        if (item?.type === "imageView") {
+          queueAttachmentCandidatesForLater(tracker, item);
+        }
       }
 
       if (state === "started") {
@@ -119,7 +116,16 @@ export function createNotificationRuntime(deps) {
       if (!threadId) {
         return;
       }
-      await finalizeTurn(threadId, null);
+      const tracker = activeTurns.get(threadId);
+      if (!tracker) {
+        return;
+      }
+      noteTurnActivity(tracker);
+      tracker.turnCompletionRequested = true;
+      if (!tracker.turnCompletionRequestedAt) {
+        tracker.turnCompletionRequestedAt = Date.now();
+      }
+      scheduleTurnFinalizeWhenSettled(threadId, tracker);
       return;
     }
 
@@ -127,8 +133,9 @@ export function createNotificationRuntime(deps) {
       const threadId = normalized.threadId;
       const message = normalized.errorMessage;
       if (threadId) {
-        const tracker = activeTurns.get(threadId);
-        if (tracker && isTransientReconnectErrorMessage(message)) {
+      const tracker = activeTurns.get(threadId);
+      if (tracker && isTransientReconnectErrorMessage(message)) {
+          noteReconnectObserved(tracker);
           markTurnReconnecting(tracker, "🔄 Temporary reconnect while processing. Continuing automatically while connection recovers...");
           debugLog("transport", "transient reconnect while turn active", {
             threadId,
@@ -189,6 +196,8 @@ export function createNotificationRuntime(deps) {
       return;
     }
     tracker.finalizing = true;
+    clearTurnFinalizeTimer(tracker);
+    tracker.turnCompletionRequested = false;
 
     if (tracker.flushTimer) {
       clearTimeout(tracker.flushTimer);
@@ -196,6 +205,7 @@ export function createNotificationRuntime(deps) {
     }
 
     try {
+      clearThinkingTicker(tracker);
       if (error) {
         tracker.failed = true;
         tracker.completed = true;
@@ -209,36 +219,200 @@ export function createNotificationRuntime(deps) {
         } else {
           pushStatusLine(tracker, `❌ Error: ${truncateStatusText(error.message, 220)}`);
         }
-        await flushTrackerParagraphs(tracker, { force: true });
+        await safeSendToChannel(tracker.channel, `❌ Error: ${truncateStatusText(error.message, 220)}`);
         tracker.reject(error);
         return;
       }
 
       tracker.completed = true;
       transitionTurnPhase(tracker, TURN_PHASE.DONE);
-      pushStatusLine(tracker, "👍 Tool calling done");
-      await flushTrackerParagraphs(tracker, { force: true });
+      await finalizeUxFlowStages(tracker);
 
       tracker.fullText = normalizeFinalSummaryText(tracker.fullText);
+      const summaryTextForDiscord = sanitizeSummaryForDiscord(tracker.fullText);
       const diffBlock = buildFileDiffSection(tracker);
-      const renderPlan = buildTurnRenderPlan({
-        summaryText: tracker.fullText,
-        diffBlock,
-        verbosity: renderVerbosity
+      const pendingAttachmentPaths = tracker.pendingAttachmentPaths ? [...tracker.pendingAttachmentPaths] : [];
+      const attachmentHintText =
+        pendingAttachmentPaths.length > 0
+          ? `${tracker.fullText}\n${pendingAttachmentPaths.join("\n")}`
+          : tracker.fullText;
+      const inferredSummaryPaths = collectLikelyLocalPathsFromText(attachmentHintText);
+      debugLog("summary", "prepared summary text", {
+        threadId: tracker.threadId,
+        turnId: tracker.threadId,
+        discordMessageId: tracker.statusMessageId ?? null,
+        rawLength: tracker.fullText.length,
+        sanitizedLength: summaryTextForDiscord.length,
+        rawPreview: summarizeForDebug(tracker.fullText, 180),
+        sanitizedPreview: summarizeForDebug(summaryTextForDiscord, 180),
+        inferredSummaryPathCount: inferredSummaryPaths.length,
+        inferredSummaryPaths: inferredSummaryPaths.slice(0, 8)
       });
-      if (renderPlan.primaryMessage) {
-        await sendChunkedToChannel(tracker.channel, renderPlan.primaryMessage);
+      if (summaryTextForDiscord) {
+        await sendChunkedToChannel(tracker.channel, summaryTextForDiscord);
       }
-      for (const statusMessage of renderPlan.statusMessages) {
-        await sendChunkedToChannel(tracker.channel, statusMessage);
+      const sentImages = await maybeSendInferredAttachmentsFromText(tracker, attachmentHintText);
+      tracker.hasSummaryImageAttachment = Number(sentImages) > 0;
+      debugLog("attachments", "inferred attachment send complete", {
+        threadId: tracker.threadId,
+        turnId: tracker.threadId,
+        discordMessageId: tracker.statusMessageId ?? null,
+        inferredSentCount: Number(sentImages) || 0,
+        telemetry: tracker.attachmentTelemetry ?? null
+      });
+      if (diffBlock) {
+        await sendChunkedToChannel(tracker.channel, diffBlock);
       }
 
       tracker.resolve(tracker.fullText);
     } finally {
+      clearWorkingTicker(tracker);
+      clearThinkingTicker(tracker);
       activeTurns.delete(threadId);
       await onTurnFinalized?.(tracker);
       await writeHeartbeatFile();
     }
+  }
+
+  function queueAttachmentCandidatesForLater(tracker, item) {
+    if (!tracker || !item || typeof item !== "object") {
+      return;
+    }
+    if (!tracker.pendingAttachmentPaths) {
+      tracker.pendingAttachmentPaths = new Set();
+    }
+    const candidates = extractAttachmentCandidates(item, { attachmentInferFromText: true });
+    for (const candidate of candidates) {
+      const value = typeof candidate?.path === "string" ? candidate.path.trim() : "";
+      if (value) {
+        tracker.pendingAttachmentPaths.add(value);
+      }
+    }
+  }
+
+  function noteTurnActivity(tracker) {
+    if (!tracker || typeof tracker !== "object") {
+      return;
+    }
+    tracker.lastTurnActivityAt = Date.now();
+  }
+
+  function noteToolCallObserved(tracker) {
+    if (!tracker || typeof tracker !== "object") {
+      return;
+    }
+    const now = Date.now();
+    tracker.hasToolCall = true;
+    if (!Number.isFinite(tracker.firstToolCallAt) || tracker.firstToolCallAt <= 0) {
+      tracker.firstToolCallAt = now;
+      return;
+    }
+    if (now < tracker.firstToolCallAt) {
+      tracker.firstToolCallAt = now;
+    }
+  }
+
+  function noteReconnectObserved(tracker) {
+    if (!tracker || typeof tracker !== "object") {
+      return;
+    }
+    tracker.lastReconnectAt = Date.now();
+  }
+
+  function updateLifecycleItemState(tracker, item, state) {
+    if (!tracker || !item || typeof item !== "object" || typeof state !== "string") {
+      return;
+    }
+    if (!tracker.activeLifecycleItemKeys) {
+      tracker.activeLifecycleItemKeys = new Set();
+    }
+    if (!tracker.completedLifecycleItemKeys) {
+      tracker.completedLifecycleItemKeys = new Set();
+    }
+    const key = makeLifecycleItemKey(item);
+    if (!key) {
+      return;
+    }
+    if (state === "completed") {
+      tracker.completedLifecycleItemKeys.add(key);
+      tracker.activeLifecycleItemKeys.delete(key);
+      return;
+    }
+    if (state === "started") {
+      if (tracker.completedLifecycleItemKeys.has(key)) {
+        return;
+      }
+      tracker.activeLifecycleItemKeys.add(key);
+    }
+  }
+
+  function makeLifecycleItemKey(item) {
+    if (!item || typeof item !== "object") {
+      return "";
+    }
+    const type = typeof item.type === "string" ? item.type : "unknown";
+    const id = item.id !== undefined && item.id !== null ? String(item.id) : "";
+    if (id) {
+      return `${type}:${id}`;
+    }
+    return "";
+  }
+
+  function clearTurnFinalizeTimer(tracker) {
+    if (!tracker?.turnFinalizeTimer) {
+      return;
+    }
+    clearTimeout(tracker.turnFinalizeTimer);
+    tracker.turnFinalizeTimer = null;
+  }
+
+  function scheduleTurnFinalizeWhenSettled(threadId, tracker) {
+    if (!tracker || tracker.finalizing || tracker.completed) {
+      return;
+    }
+    clearTurnFinalizeTimer(tracker);
+    tracker.turnFinalizeTimer = setTimeout(() => {
+      void maybeFinalizeTurnWhenSettled(threadId);
+    }, turnCompletionQuietMs);
+    if (typeof tracker.turnFinalizeTimer?.unref === "function") {
+      tracker.turnFinalizeTimer.unref();
+    }
+  }
+
+  async function maybeFinalizeTurnWhenSettled(threadId) {
+    const tracker = activeTurns.get(threadId);
+    if (!tracker || tracker.finalizing || tracker.completed) {
+      return;
+    }
+    const now = Date.now();
+    const lastActivityAt = Number.isFinite(tracker.lastTurnActivityAt) ? tracker.lastTurnActivityAt : now;
+    const quietForMs = now - lastActivityAt;
+    const activeItemCount = tracker.activeLifecycleItemKeys?.size ?? 0;
+    const requestedAt = Number.isFinite(tracker.turnCompletionRequestedAt) ? tracker.turnCompletionRequestedAt : now;
+    const waitedMs = now - requestedAt;
+    const lastReconnectAt = Number.isFinite(tracker.lastReconnectAt) ? tracker.lastReconnectAt : 0;
+    const reconnectQuietForMs = lastReconnectAt > 0 ? now - lastReconnectAt : Infinity;
+    const reconnectSettled = reconnectQuietForMs >= reconnectSettleQuietMs;
+
+    if ((quietForMs < turnCompletionQuietMs || activeItemCount > 0 || !reconnectSettled) && waitedMs < turnCompletionMaxWaitMs) {
+      debugLog("turn", "turn completion deferred until stream settles", {
+        threadId: tracker.threadId,
+        turnId: tracker.threadId,
+        discordMessageId: tracker.statusMessageId ?? null,
+        quietForMs,
+        activeItemCount,
+        reconnectQuietForMs: Number.isFinite(reconnectQuietForMs) ? reconnectQuietForMs : null,
+        reconnectSettled,
+        waitedMs,
+        quietWindowMs: turnCompletionQuietMs,
+        reconnectQuietWindowMs: reconnectSettleQuietMs,
+        maxWaitMs: turnCompletionMaxWaitMs
+      });
+      scheduleTurnFinalizeWhenSettled(threadId, tracker);
+      return;
+    }
+
+    await finalizeTurn(threadId, null);
   }
 
   function markTurnReconnecting(tracker, line) {
@@ -250,6 +424,139 @@ export function createNotificationRuntime(deps) {
     scheduleFlush(tracker);
   }
 
+  async function ensureThinkingStage(tracker) {
+    if (!tracker?.channel || !tracker?.statusMessageId || tracker?.hasToolCall) {
+      clearThinkingTicker(tracker);
+      return;
+    }
+    if (!tracker.thinkingStartedAt) {
+      tracker.thinkingStartedAt = Date.now();
+    }
+    if (tracker.thinkingTicker) {
+      return;
+    }
+    const tick = async () => {
+      if (!tracker?.channel || !tracker?.statusMessageId || tracker?.hasToolCall) {
+        clearThinkingTicker(tracker);
+        return;
+      }
+      const startedAt = tracker.thinkingStartedAt || Date.now();
+      const elapsed = formatDuration(Date.now() - startedAt);
+      const payload = `⏳ Thinking... (${elapsed})`;
+      pushStatusLine(tracker, payload);
+      await editTrackerMessage(tracker, buildTrackerMessageContent(tracker));
+    };
+    void tick();
+    tracker.thinkingTicker = setInterval(() => {
+      void tick();
+    }, 3000);
+    if (typeof tracker.thinkingTicker?.unref === "function") {
+      tracker.thinkingTicker.unref();
+    }
+  }
+
+  async function ensureWorkingStage(tracker) {
+    if (!tracker?.channel || tracker?.workingMessageId) {
+      return;
+    }
+    if (tracker.workingMessageCreatePromise) {
+      await tracker.workingMessageCreatePromise;
+      return;
+    }
+    tracker.hasToolCall = true;
+    clearThinkingTicker(tracker);
+    if (!tracker.firstToolCallAt) {
+      tracker.firstToolCallAt = Date.now();
+    }
+    const createPromise = (async () => {
+      const elapsed = formatDuration(Date.now() - tracker.firstToolCallAt);
+      const message = await safeSendToChannel(tracker.channel, `👷 Working (${elapsed})`);
+      if (!message) {
+        return;
+      }
+      tracker.workingMessage = message;
+      tracker.workingMessageId = message.id;
+      startWorkingTicker(tracker);
+    })();
+    tracker.workingMessageCreatePromise = createPromise;
+    try {
+      await createPromise;
+    } finally {
+      tracker.workingMessageCreatePromise = null;
+    }
+  }
+
+  function startWorkingTicker(tracker) {
+    if (!tracker?.workingMessageId || !tracker?.channel) {
+      return;
+    }
+    clearWorkingTicker(tracker);
+    const tick = async () => {
+      if (!tracker?.workingMessageId || !tracker?.channel) {
+        return;
+      }
+      const firstToolAt = tracker.firstToolCallAt || Date.now();
+      const elapsed = formatDuration(Date.now() - firstToolAt);
+      const payload = `👷 Working (${elapsed})`;
+      try {
+        const edited = await tracker.channel.messages.edit(tracker.workingMessageId, payload);
+        if (edited) {
+          tracker.workingMessage = edited;
+        }
+        tracker.workingLastRefreshAt = Date.now();
+        debugLog("status", "working ticker refreshed", {
+          threadId: tracker.threadId,
+          turnId: tracker.threadId,
+          discordMessageId: tracker.statusMessageId ?? null,
+          workingMessageId: tracker.workingMessageId ?? null,
+          elapsed,
+          payload
+        });
+      } catch (error) {
+        debugLog("status", "working ticker update failed", {
+          threadId: tracker.threadId,
+          turnId: tracker.threadId,
+          discordMessageId: tracker.statusMessageId ?? null,
+          workingMessageId: tracker.workingMessageId ?? null,
+          error: truncateStatusText(String(error?.message ?? error ?? "unknown"), 220)
+        });
+      }
+    };
+
+    void tick();
+    tracker.workingTicker = setInterval(() => {
+      void tick();
+    }, 3000);
+    if (typeof tracker.workingTicker?.unref === "function") {
+      tracker.workingTicker.unref();
+    }
+  }
+
+  async function finalizeUxFlowStages(tracker) {
+    clearWorkingTicker(tracker);
+    if (tracker.hasToolCall && tracker.firstToolCallAt) {
+      tracker.lastToolCompletedAt = Date.now();
+      const elapsed = formatDuration(tracker.lastToolCompletedAt - tracker.firstToolCallAt);
+      await safeSendToChannel(tracker.channel, `✅ Work complete (${elapsed})`);
+    }
+  }
+
+  function clearWorkingTicker(tracker) {
+    if (!tracker?.workingTicker) {
+      return;
+    }
+    clearInterval(tracker.workingTicker);
+    tracker.workingTicker = null;
+  }
+
+  function clearThinkingTicker(tracker) {
+    if (!tracker?.thinkingTicker) {
+      return;
+    }
+    clearInterval(tracker.thinkingTicker);
+    tracker.thinkingTicker = null;
+  }
+
   function appendTrackerText(tracker, text, { fromDelta }) {
     if (!text) {
       return;
@@ -257,143 +564,6 @@ export function createNotificationRuntime(deps) {
     tracker.fullText += text;
     if (fromDelta) {
       tracker.seenDelta = true;
-    }
-  }
-
-  function shouldAnnounceStatusItem(itemType, verbosity = "user") {
-    if (typeof itemType !== "string" || !itemType) {
-      return false;
-    }
-    let announced;
-    if (verbosity === "debug") {
-      announced = new Set([
-        "commandExecution",
-        "mcpToolCall",
-        "webSearch",
-        "imageView",
-        "contextCompaction",
-        "collabAgentToolCall",
-        "toolCall"
-      ]);
-    } else if (verbosity === "ops") {
-      announced = new Set(["commandExecution", "mcpToolCall", "webSearch", "imageView", "toolCall"]);
-    } else {
-      announced = new Set(["imageView"]);
-    }
-    return announced.has(itemType);
-  }
-
-  function recordItemStatusLine(item, state) {
-    if (!item || typeof item !== "object") {
-      return null;
-    }
-    const lines = summarizeItemForStatus(item, state);
-    if (lines.length === 0) {
-      return null;
-    }
-    return lines[lines.length - 1];
-  }
-
-  async function sendStatusUpdateLine(tracker, line) {
-    if (!tracker?.channel || typeof line !== "string" || !line.trim()) {
-      return null;
-    }
-    const normalized = line.trim();
-    if (tracker.lastStatusUpdateLine === normalized) {
-      return null;
-    }
-    tracker.lastStatusUpdateLine = normalized;
-    const message = await safeSendToChannel(tracker.channel, normalized);
-    debugLog("status", "status line sent", {
-      threadId: tracker.threadId,
-      turnId: tracker.threadId,
-      discordMessageId: tracker.statusMessageId ?? null,
-      line: normalized
-    });
-    return message;
-  }
-
-  function makeItemStatusKey(item) {
-    if (!item || typeof item !== "object") {
-      return "";
-    }
-    if (item.id !== undefined && item.id !== null) {
-      const id = String(item.id);
-      if (id) {
-        return `id:${id}`;
-      }
-    }
-    if (item.type === "commandExecution" && typeof item.command === "string" && item.command) {
-      return `cmd:${item.command}`;
-    }
-    if (item.type === "webSearch") {
-      const queries = extractWebSearchDetails(item);
-      if (queries.length > 0) {
-        return `search:${queries[0]}`;
-      }
-    }
-    return "";
-  }
-
-  function shouldReactOnCompletion(itemType) {
-    return itemType === "commandExecution" || itemType === "webSearch";
-  }
-
-  async function reactToStatusCompletion(tracker, item) {
-    const key = makeItemStatusKey(item);
-    if (!key) {
-      return;
-    }
-    const emoji = completionReactionEmoji(item);
-    if (!emoji) {
-      return;
-    }
-    const messageId = tracker.itemStatusMessages.get(key);
-    if (!messageId) {
-      tracker.pendingCompletionReactions?.set(key, emoji);
-      return;
-    }
-    await reactToStatusMessage(tracker, messageId, key, emoji);
-  }
-
-  function completionReactionEmoji(item) {
-    if (!item || typeof item !== "object") {
-      return null;
-    }
-    if (item.type === "commandExecution") {
-      const exitCode = typeof item.exitCode === "number" ? item.exitCode : null;
-      if (exitCode === 0) {
-        return "✅";
-      }
-      if (exitCode !== null) {
-        return "❌";
-      }
-      return "✅";
-    }
-    if (item.type === "webSearch") {
-      return "✅";
-    }
-    return null;
-  }
-
-  async function reactToStatusMessage(tracker, messageId, key, emoji) {
-    if (!tracker.channel?.isTextBased?.()) {
-      return;
-    }
-    try {
-      const message = await tracker.channel.messages.fetch(messageId);
-      if (message) {
-        await message.react(emoji);
-      }
-    } catch (error) {
-    debugLog("status", "completion reaction failed", {
-      threadId: tracker.threadId,
-      turnId: tracker.threadId,
-      discordMessageId: tracker.statusMessageId ?? null,
-      key,
-      emoji,
-      error: String(error?.message ?? error)
-      });
     }
   }
 
@@ -413,6 +583,17 @@ export function createNotificationRuntime(deps) {
 
   function buildTrackerMessageContent(tracker) {
     return truncateForDiscordMessage(tracker.currentStatusLine || "⏳ Thinking...", discordMaxMessageLength);
+  }
+
+  function summarizeForDebug(text, max = 180) {
+    if (typeof text !== "string" || !text) {
+      return "";
+    }
+    const normalized = text.replace(/\s+/g, " ").trim();
+    if (normalized.length <= max) {
+      return normalized;
+    }
+    return `${normalized.slice(0, Math.max(0, max - 3))}...`;
   }
 
   async function editTrackerMessage(tracker, content) {
@@ -480,6 +661,25 @@ export function createNotificationRuntime(deps) {
         messageId: replacement.id
       });
     }
+  }
+
+  function isToolCallItemType(itemType) {
+    return (
+      itemType === "toolCall" ||
+      itemType === "mcpToolCall" ||
+      itemType === "commandExecution" ||
+      itemType === "webSearch"
+    );
+  }
+
+  function formatDuration(durationMs) {
+    const totalSeconds = Math.max(0, Math.floor(Number(durationMs) / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (minutes > 0) {
+      return `${minutes}m ${seconds}s`;
+    }
+    return `${seconds}s`;
   }
 
   return {

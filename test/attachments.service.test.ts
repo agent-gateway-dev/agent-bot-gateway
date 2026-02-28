@@ -53,4 +53,24 @@ describe("attachments service", () => {
     const found = collectLikelyLocalPathsFromText("see this ![img](/tmp/capture.png)");
     expect(found).toContain("/tmp/capture.png");
   });
+
+  test("collectLikelyLocalPathsFromText captures repo-relative media paths", () => {
+    const found = collectLikelyLocalPathsFromText(
+      [
+        "screenshots/:",
+        "- screenshots/after_tap.png",
+        "- walkie-talkie/screenshots/home-current-verify.png"
+      ].join("\n")
+    );
+    expect(found).toContain("screenshots/after_tap.png");
+    expect(found).toContain("walkie-talkie/screenshots/home-current-verify.png");
+  });
+
+  test("collectLikelyLocalPathsFromText captures filename-only media mentions", () => {
+    const found = collectLikelyLocalPathsFromText(
+      "please send home-brand-theme-fresh-4.png and [settings](settings-page-avd-latest.png)"
+    );
+    expect(found).toContain("home-brand-theme-fresh-4.png");
+    expect(found).toContain("settings-page-avd-latest.png");
+  });
 });

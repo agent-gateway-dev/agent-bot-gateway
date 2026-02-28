@@ -11,6 +11,13 @@ export interface CliRuntimePaths {
   stderrLogPath: string;
 }
 
+export interface LaunchdServiceInfo {
+  plistPath: string;
+  label: string;
+  domain: string;
+  serviceTarget: string;
+}
+
 export function resolveCliRuntimePaths(cwd: string): CliRuntimePaths {
   const runtimeRoot = resolveRuntimeRoot(cwd);
   const plistLogPaths = readLaunchdLogPaths(runtimeRoot);
@@ -47,6 +54,22 @@ export function parsePathListEnv(raw: string | undefined): string[] {
     .map((entry) => path.resolve(entry));
 }
 
+export function resolveLaunchdServiceInfo(cwd: string): LaunchdServiceInfo {
+  const runtimeRoot = resolveRuntimeRoot(cwd);
+  const plistPath = path.resolve(runtimeRoot, "com.codex.discord.bridge.plist");
+  const labelFromPlist = readLaunchdLabel(runtimeRoot);
+  const labelFromEnv = String(process.env.DISCORD_LAUNCHD_LABEL ?? "").trim();
+  const label = labelFromEnv || labelFromPlist || "com.codex.discord.bridge";
+  const uid = resolveUserId();
+  const domain = `gui/${uid}`;
+  return {
+    plistPath,
+    label,
+    domain,
+    serviceTarget: `${domain}/${label}`
+  };
+}
+
 function resolveLogPath(envValue: string | undefined, plistValue: string | null, fallback: string): string {
   const fromEnv = String(envValue ?? "").trim();
   if (fromEnv) {
@@ -77,6 +100,25 @@ function readLaunchdLogPaths(cwd: string): { stdoutLogPath: string | null; stder
   } catch {
     return { stdoutLogPath: null, stderrLogPath: null };
   }
+}
+
+function readLaunchdLabel(cwd: string): string | null {
+  const plistPath = path.resolve(cwd, "com.codex.discord.bridge.plist");
+  try {
+    const raw = fs.readFileSync(plistPath, "utf8");
+    return extractPlistStringValue(raw, "Label");
+  } catch {
+    return null;
+  }
+}
+
+function resolveUserId(): number {
+  if (typeof process.getuid === "function") {
+    return process.getuid();
+  }
+  const rawUid = String(process.env.UID ?? "").trim();
+  const parsed = Number.parseInt(rawUid, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
 function extractPlistStringValue(raw: string, key: string): string | null {

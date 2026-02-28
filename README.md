@@ -1,6 +1,6 @@
 # Codex Discord Bridge
 
-[![Codex Discord Bridge Hero](public/images/cover_2.png)](https://youtu.be/w1mGVW2mk5c)
+[![Codex Discord Bridge Hero](public/images/cover_new.png)](https://youtu.be/RRF-F5jDS50)
 
 Personal Discord bridge for Codex app-server.
 
@@ -33,7 +33,7 @@ src/codex/notificationMapper.js Normalized notification boundaries
 src/codex/approvalPayloads.js Approval request/response mapping
 src/attachments/service.js    Attachment candidate extraction + upload policy
 src/render/messageRenderer.js Message render plan, redaction, chunking
-src/cli/**                    Operator CLI (`status`, `doctor`, `reload`, `logs`)
+src/cli/**                    Operator CLI (`status`, `doctor`, `start`, `stop`, `reload`, `logs`)
 src/app/main.ts               TS bootstrap entry used by `start:ts`
 src/types/**                  TS boundary contracts for cutover
 ```
@@ -100,6 +100,8 @@ On startup, the bot:
 ## Operator CLI
 
 - `bun run cli status` shows runtime paths, binding count, and heartbeat status.
+- `bun run cli start` bootstraps/enables/kickstarts the launchd service (`com.codex.discord.bridge` by default).
+- `bun run cli stop` stops the launchd service via `bootout`.
 - `bun run cli logs` tails active bridge stdout/stderr logs (same paths used by launchd when configured).
   - Supports `--clear` and `--since <10m|2h|iso>` for faster incident triage.
 - `bun run cli config-validate` validates channel/env config and reports effective defaults.
@@ -109,7 +111,7 @@ On startup, the bot:
 - `scripts/restart-supervisor.sh -- bun run start` runs a host-side process loop that watches `data/restart-request.json` and restarts the bridge externally (with throttle/backoff).
 - Optional global command from any directory:
   - Run `npm link` once in this repo.
-  - Then use `dc-bridge status`, `dc-bridge logs`, `dc-bridge restart "manual restart"`, etc.
+  - Then use `dc-bridge start`, `dc-bridge stop`, `dc-bridge status`, `dc-bridge logs`, `dc-bridge restart "manual restart"`, etc.
 
 ## Stability Checks
 
@@ -157,3 +159,4 @@ On startup, the bot:
 - `DISCORD_EXIT_ON_RESTART_ACK=1` lets bridge self-exit after ack marker detection (disabled by default).
 - `DISCORD_STDOUT_LOG_PATH` overrides CLI `logs` stdout file path (otherwise launchd plist or `/tmp/codex-discord-bridge.out.log`).
 - `DISCORD_STDERR_LOG_PATH` overrides CLI `logs` stderr file path (otherwise launchd plist or `/tmp/codex-discord-bridge.err.log`).
+- `DISCORD_LAUNCHD_LABEL` overrides the launchd label used by `dc-bridge start|stop` (default from plist `Label`, fallback `com.codex.discord.bridge`).

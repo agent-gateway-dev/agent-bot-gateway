@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildTurnRenderPlan,
   normalizeRenderVerbosity,
-  redactLocalPathsForDiscord,
+  sanitizeSummaryForDiscord,
   sendChunkedToChannel,
   splitForDiscord,
   truncateForDiscordMessage
@@ -46,13 +46,9 @@ describe("message renderer", () => {
     expect(chunks).toEqual(["abcd", "efgh", "ij"]);
   });
 
-  test("redacts local absolute paths in markdown links and plain text", () => {
-    const redacted = redactLocalPathsForDiscord(
-      "See ![img](/tmp/screenshots/shot.png) and /Users/me/repo/file.txt"
-    );
-    expect(redacted).toContain("](shot.png)");
-    expect(redacted).toContain("file.txt");
-    expect(redacted).not.toContain("/Users/me/repo/file.txt");
+  test("summary sanitizer is passthrough trim only", () => {
+    const sanitized = sanitizeSummaryForDiscord("  See [img](x.png)\n/path/file.png  ");
+    expect(sanitized).toBe("See [img](x.png)\n/path/file.png");
   });
 
   test("sendChunkedToChannel sends each split chunk", async () => {

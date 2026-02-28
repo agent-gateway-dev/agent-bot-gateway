@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { maybeSendAttachmentsForItem } from "../src/attachments/service.js";
+import { maybeSendAttachmentsForItem, maybeSendInferredAttachmentsFromText } from "../src/attachments/service.js";
 
 const tempDirs: string[] = [];
 
@@ -140,5 +140,92 @@ describe("attachments integration smoke", () => {
     );
 
     expect(issueMessages).toEqual([]);
+  });
+
+  test("summary inferred attachments send all unique referenced relative image paths", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-bridge-attach-summary-"));
+    tempDirs.push(tmpDir);
+    const realTmpDir = await fs.realpath(tmpDir);
+    const screenshotsDir = path.join(realTmpDir, "screenshots");
+    await fs.mkdir(screenshotsDir, { recursive: true });
+    await fs.writeFile(path.join(screenshotsDir, "after_tap.png"), "a");
+    await fs.writeFile(path.join(screenshotsDir, "home.png"), "b");
+
+    const sentPayloads: Array<Record<string, unknown>> = [];
+    const tracker = {
+      channel: { id: "channel-4" },
+      cwd: realTmpDir,
+      sentAttachmentKeys: new Set<string>(),
+      seenAttachmentIssueKeys: new Set<string>(),
+      attachmentIssueCount: 0
+    };
+
+    const sentCount = await maybeSendInferredAttachmentsFromText(
+      tracker,
+      [
+        "I found screenshots:",
+        "- screenshots/after_tap.png",
+        "- screenshots/home.png",
+        "- screenshots/after_tap.png"
+      ].join("\n"),
+      {
+        attachmentsEnabled: true,
+        attachmentMaxBytes: 8 * 1024 * 1024,
+        attachmentRoots: [realTmpDir],
+        imageCacheDir: realTmpDir,
+        statusLabelForItemType: () => "image view",
+        safeSendToChannel: async () => null,
+        safeSendToChannelPayload: async (_channel: unknown, payload: Record<string, unknown>) => {
+          sentPayloads.push(payload);
+          return null;
+        },
+        truncateStatusText: (text: string) => text
+      }
+    );
+
+    expect(sentCount).toBe(2);
+    expect(sentPayloads.length).toBe(2);
+    expect(String(sentPayloads[0]?.content ?? "")).toContain("after_tap.png");
+    expect(String(sentPayloads[1]?.content ?? "")).toContain("home.png");
+  });
+
+  test("summary inferred attachments resolve filename-only image mention to unique file under cwd", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-bridge-attach-filename-"));
+    tempDirs.push(tmpDir);
+    const realTmpDir = await fs.realpath(tmpDir);
+    const screenshotsDir = path.join(realTmpDir, "walkie-talkie", "screenshots");
+    await fs.mkdir(screenshotsDir, { recursive: true });
+    await fs.writeFile(path.join(screenshotsDir, "home-brand-theme-fresh-4.png"), "img");
+
+    const sentPayloads: Array<Record<string, unknown>> = [];
+    const tracker = {
+      channel: { id: "channel-5" },
+      cwd: realTmpDir,
+      sentAttachmentKeys: new Set<string>(),
+      seenAttachmentIssueKeys: new Set<string>(),
+      attachmentIssueCount: 0
+    };
+
+    const sentCount = await maybeSendInferredAttachmentsFromText(
+      tracker,
+      "can you send me home-brand-theme-fresh-4.png",
+      {
+        attachmentsEnabled: true,
+        attachmentMaxBytes: 8 * 1024 * 1024,
+        attachmentRoots: [realTmpDir],
+        imageCacheDir: realTmpDir,
+        statusLabelForItemType: () => "image view",
+        safeSendToChannel: async () => null,
+        safeSendToChannelPayload: async (_channel: unknown, payload: Record<string, unknown>) => {
+          sentPayloads.push(payload);
+          return null;
+        },
+        truncateStatusText: (text: string) => text
+      }
+    );
+
+    expect(sentCount).toBe(1);
+    expect(sentPayloads.length).toBe(1);
+    expect(String(sentPayloads[0]?.content ?? "")).toContain("home-brand-theme-fresh-4.png");
   });
 });
