@@ -86,23 +86,57 @@ export function createTurnRunner(deps) {
           await turn.promise;
         };
 
-        try {
-          await runTurn(threadId);
-        } catch (error) {
-          if (!isThreadNotFoundError(error)) {
+        let reconnectRetryCount = 0;
+        const maxTurnReconnectRetries = Number.isFinite(Number(process.env.DISCORD_TURN_RECONNECT_MAX_RETRIES))
+          ? Math.max(1, Math.floor(Number(process.env.DISCORD_TURN_RECONNECT_MAX_RETRIES)))
+          : 24;
+        const settleTimeoutMs = Number.isFinite(Number(process.env.DISCORD_TURN_SETTLE_TIMEOUT_MS))
+          ? Math.max(5_000, Math.floor(Number(process.env.DISCORD_TURN_SETTLE_TIMEOUT_MS)))
+          : 120_000;
+        while (true) {
+          try {
+            await runTurn(threadId);
+            break;
+          } catch (error) {
+            if (isThreadNotFoundError(error)) {
+              abortActiveTurn(threadId, error);
+              if (turnPromise) {
+                await turnPromise.catch(() => {});
+              }
+
+              state.clearBinding(repoChannelId);
+              await state.save();
+
+              threadId = await ensureThreadId(repoChannelId, job.setup);
+              continue;
+            }
+
+            const message = String(error?.message ?? "");
+            if (isTransientReconnectError(message) && reconnectRetryCount < maxTurnReconnectRetries) {
+              reconnectRetryCount += 1;
+              const settlement = turnPromise ? await waitForTurnSettlement(turnPromise, settleTimeoutMs) : "timeout";
+              if (settlement === "resolved") {
+                break;
+              }
+              const tracker = activeTurns.get(threadId);
+              const hasProgress = hasTurnProgress(tracker);
+              if (!hasProgress) {
+                if (activeTurns.has(threadId)) {
+                  abortActiveTurn(threadId, error);
+                }
+                if (turnPromise) {
+                  await turnPromise.catch(() => {});
+                }
+                await delay(Math.min(10_000, 1_000 * reconnectRetryCount));
+                threadId = await ensureThreadId(repoChannelId, job.setup);
+                continue;
+              }
+              // Progress already observed: do not replay same prompt and risk duplicate output.
+              throw error;
+            }
+
             throw error;
           }
-
-          abortActiveTurn(threadId, error);
-          if (turnPromise) {
-            await turnPromise.catch(() => {});
-          }
-
-          state.clearBinding(repoChannelId);
-          await state.save();
-
-          threadId = await ensureThreadId(repoChannelId, job.setup);
-          await runTurn(threadId);
         }
       } catch (error) {
         if (startedThreadId && activeTurns.has(startedThreadId)) {
@@ -120,7 +154,11 @@ export function createTurnRunner(deps) {
   }
 
   async function requestCodexWithReconnectRetry(requestFn) {
-    const maxAttempts = 12;
+    const configuredMaxAttempts = Number(process.env.DISCORD_RPC_RECONNECT_MAX_ATTEMPTS ?? "");
+    const maxAttempts =
+      Number.isFinite(configuredMaxAttempts) && configuredMaxAttempts > 0
+        ? Math.floor(configuredMaxAttempts)
+        : 60;
     let attempt = 1;
     while (true) {
       try {
@@ -131,7 +169,7 @@ export function createTurnRunner(deps) {
         if (!shouldRetry) {
           throw error;
         }
-        await delay(Math.min(4_000, 400 * attempt));
+        await delay(Math.min(10_000, 500 * attempt));
         attempt += 1;
       }
     }
@@ -239,6 +277,7 @@ export function createTurnRunner(deps) {
       statusSyntheticCounter: 0,
       flushTimer: null,
       lastFlushAt: 0,
+      finalizing: false,
       resolve: resolveTurn,
       reject: rejectTurn
     });
@@ -299,4 +338,32 @@ function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function hasTurnProgress(tracker) {
+  if (!tracker || typeof tracker !== "object") {
+    return false;
+  }
+  if (tracker.seenDelta) {
+    return true;
+  }
+  if (typeof tracker.fullText === "string" && tracker.fullText.trim().length > 0) {
+    return true;
+  }
+  if (typeof tracker.currentStatusLine === "string" && tracker.currentStatusLine.trim() !== "⏳ Thinking...") {
+    return true;
+  }
+  return false;
+}
+
+async function waitForTurnSettlement(turnPromise, timeoutMs) {
+  try {
+    const settled = await Promise.race([
+      turnPromise.then(() => "resolved").catch(() => "rejected"),
+      delay(timeoutMs).then(() => "timeout")
+    ]);
+    return settled;
+  } catch {
+    return "timeout";
+  }
 }

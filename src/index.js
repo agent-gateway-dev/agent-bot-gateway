@@ -1372,6 +1372,18 @@ function isThreadNotFoundError(error) {
   return message.includes("thread not found") || message.includes("unknown thread");
 }
 
+function isTransientReconnectErrorMessage(message) {
+  const normalized = String(message ?? "").toLowerCase();
+  return (
+    /reconnecting\.\.\.\s*\d+\/\d+/i.test(normalized) ||
+    normalized.includes("temporarily unavailable") ||
+    normalized.includes("connection reset") ||
+    normalized.includes("connection closed") ||
+    normalized.includes("connection lost") ||
+    normalized.includes("econnreset")
+  );
+}
+
 function debugLog(scope, message, details) {
   if (!debugLoggingEnabled) {
     return;
@@ -1528,6 +1540,14 @@ async function handleNotification({ method, params }) {
     const threadId = normalized.threadId;
     const message = normalized.errorMessage;
     if (threadId) {
+      const tracker = activeTurns.get(threadId);
+      if (tracker && isTransientReconnectErrorMessage(message)) {
+        debugLog("transport", "transient reconnect while turn active", {
+          threadId,
+          message: truncateStatusText(String(message ?? ""), 200)
+        });
+        return;
+      }
       await finalizeTurn(threadId, new Error(message));
     }
   }
@@ -1841,6 +1861,10 @@ async function finalizeTurn(threadId, error) {
   if (!tracker) {
     return;
   }
+  if (tracker.finalizing) {
+    return;
+  }
+  tracker.finalizing = true;
 
   if (tracker.flushTimer) {
     clearTimeout(tracker.flushTimer);
@@ -1852,7 +1876,14 @@ async function finalizeTurn(threadId, error) {
       tracker.failed = true;
       tracker.completed = true;
       tracker.failureMessage = error.message;
-      pushStatusLine(tracker, `❌ Error: ${truncateStatusText(error.message, 220)}`);
+      if (isTransientReconnectErrorMessage(error.message)) {
+        pushStatusLine(
+          tracker,
+          "🔄 Temporary reconnect while processing. Please retry if no follow-up response appears."
+        );
+      } else {
+        pushStatusLine(tracker, `❌ Error: ${truncateStatusText(error.message, 220)}`);
+      }
       await flushTrackerParagraphs(tracker, { force: true });
       tracker.reject(error);
       return;
@@ -1862,6 +1893,7 @@ async function finalizeTurn(threadId, error) {
     pushStatusLine(tracker, "👍 Tool calling done");
     await flushTrackerParagraphs(tracker, { force: true });
 
+    tracker.fullText = normalizeFinalSummaryText(tracker.fullText);
     const diffBlock = buildFileDiffSection(tracker);
     const renderPlan = buildTurnRenderPlan({
       summaryText: tracker.fullText,
@@ -1880,6 +1912,70 @@ async function finalizeTurn(threadId, error) {
     activeTurns.delete(threadId);
     await writeHeartbeatFile();
   }
+}
+
+function collapseAdjacentDuplicateParagraphs(text) {
+  const source = typeof text === "string" ? text : "";
+  if (!source.trim()) {
+    return source;
+  }
+  const paragraphs = source.split(/\n{2,}/);
+  const deduped = [];
+  for (const paragraph of paragraphs) {
+    const normalized = paragraph.trim();
+    if (!normalized) {
+      continue;
+    }
+    const previous = deduped.length > 0 ? deduped[deduped.length - 1].trim() : "";
+    if (previous && previous === normalized) {
+      continue;
+    }
+    deduped.push(paragraph);
+  }
+  return deduped.join("\n\n");
+}
+
+function collapseConsecutiveDuplicateLines(text) {
+  const source = typeof text === "string" ? text : "";
+  if (!source) {
+    return source;
+  }
+  const lines = source.split("\n");
+  const deduped = [];
+  for (const line of lines) {
+    const normalized = line.trim();
+    const previous = deduped.length > 0 ? deduped[deduped.length - 1].trim() : "";
+    if (normalized && normalized === previous) {
+      continue;
+    }
+    deduped.push(line);
+  }
+  return deduped.join("\n");
+}
+
+function collapseExactRepeatedBody(text) {
+  const source = typeof text === "string" ? text : "";
+  const trimmed = source.trim();
+  if (!trimmed || trimmed.length > 400) {
+    return source;
+  }
+  if (trimmed.length % 2 !== 0) {
+    return source;
+  }
+  const half = trimmed.length / 2;
+  const left = trimmed.slice(0, half).trim();
+  const right = trimmed.slice(half).trim();
+  if (!left || left !== right) {
+    return source;
+  }
+  return left;
+}
+
+function normalizeFinalSummaryText(text) {
+  let normalized = collapseAdjacentDuplicateParagraphs(text);
+  normalized = collapseConsecutiveDuplicateLines(normalized);
+  normalized = collapseExactRepeatedBody(normalized);
+  return normalized;
 }
 
 function appendTrackerText(tracker, text, { fromDelta }) {

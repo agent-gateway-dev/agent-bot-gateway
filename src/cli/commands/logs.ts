@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 import type { CliCommandResult, CliContext } from "../../types/events.js";
 import { resolveCliRuntimePaths } from "../paths.js";
 
@@ -10,7 +11,7 @@ export async function runLogsCommand(args: string[], context: CliContext): Promi
       ok: false,
       message: options.error,
       details: {
-        usage: "logs [--lines <n>] [--stdout] [--stderr] [--no-follow]"
+        usage: "logs [--lines <n>] [--stdout] [--stderr] [--no-follow] [--clear]"
       }
     };
   }
@@ -24,6 +25,26 @@ export async function runLogsCommand(args: string[], context: CliContext): Promi
     targetPaths.push(paths.stderrLogPath);
   }
   const uniqueTargetPaths = [...new Set(targetPaths)];
+
+  if (options.clear) {
+    for (const logPath of uniqueTargetPaths) {
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.writeFileSync(logPath, "");
+    }
+    console.error(`[dc-bridge logs] cleared: ${uniqueTargetPaths.map((entry) => `'${entry}'`).join(", ")}`);
+    if (!options.follow) {
+      return {
+        ok: true,
+        message: "logs cleared",
+        details: {
+          follow: options.follow,
+          lines: options.lines,
+          clear: true,
+          paths: uniqueTargetPaths
+        }
+      };
+    }
+  }
 
   const existing = uniqueTargetPaths.filter((entry) => fs.existsSync(entry));
   if (existing.length === 0) {
@@ -48,6 +69,7 @@ export async function runLogsCommand(args: string[], context: CliContext): Promi
       details: {
         follow: options.follow,
         lines: options.lines,
+        clear: options.clear,
         paths: uniqueTargetPaths
       }
     };
@@ -58,6 +80,7 @@ export async function runLogsCommand(args: string[], context: CliContext): Promi
     details: {
       follow: options.follow,
       lines: options.lines,
+      clear: options.clear,
       paths: uniqueTargetPaths
     }
   };
@@ -72,10 +95,11 @@ async function runTail(args: string[]): Promise<number | null> {
 }
 
 function parseLogsOptions(args: string[]):
-  | { ok: true; lines: number; follow: boolean; includeStdout: boolean; includeStderr: boolean }
+  | { ok: true; lines: number; follow: boolean; clear: boolean; includeStdout: boolean; includeStderr: boolean }
   | { ok: false; error: string } {
   let lines = 200;
   let follow = true;
+  let clear = false;
   let includeStdout = true;
   let includeStderr = true;
 
@@ -86,6 +110,10 @@ function parseLogsOptions(args: string[]):
     }
     if (arg === "--no-follow") {
       follow = false;
+      continue;
+    }
+    if (arg === "--clear") {
+      clear = true;
       continue;
     }
     if (arg === "--stdout") {
@@ -115,6 +143,7 @@ function parseLogsOptions(args: string[]):
     ok: true,
     lines,
     follow,
+    clear,
     includeStdout,
     includeStderr
   };
