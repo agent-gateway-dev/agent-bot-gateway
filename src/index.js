@@ -16,6 +16,8 @@ import { createAttachmentInputBuilder } from "./attachments/inputBuilder.js";
 import { createRuntimeOps } from "./app/runtimeOps.js";
 import { createDiscordRuntime } from "./app/discordRuntime.js";
 import { createChannelMessaging } from "./app/channelMessaging.js";
+import { createShutdownHandler } from "./app/shutdown.js";
+import { startBridgeRuntime } from "./app/startup.js";
 import { createServerRequestRuntime } from "./approvals/serverRequestRuntime.js";
 import { createBootstrapService } from "./channels/bootstrapService.js";
 import { resolveRepoContext, isGeneralChannel } from "./channels/context.js";
@@ -149,11 +151,11 @@ const activeTurns = new Map();
 const pendingApprovals = new Map();
 let nextApprovalToken = 1;
 const processStartedAt = new Date().toISOString();
-let shuttingDown = false;
 let runtimeOps = null;
 let discordRuntime = null;
 let notificationRuntime = null;
 let serverRequestRuntime = null;
+let shutdown = null;
 const turnRunner = createTurnRunner({
   queues,
   activeTurns,
@@ -230,7 +232,7 @@ runtimeOps = createRuntimeOps({
   safeReply,
   safeSendToChannel,
   truncateStatusText,
-  shutdown
+  shutdown: (...args) => shutdown?.(...args)
 });
 
 const bootstrapService = createBootstrapService({
@@ -349,37 +351,25 @@ discordRuntime = createDiscordRuntime({
   MessageFlags
 });
 
-await codex.start();
-await fs.mkdir(generalChannelCwd, { recursive: true }).catch((error) => {
-  console.warn(`failed to ensure general cwd at ${generalChannelCwd}: ${error.message}`);
+shutdown = createShutdownHandler({
+  codex,
+  discord,
+  stopHeartbeatLoop: () => runtimeOps?.stopHeartbeatLoop()
 });
-await discord.login(discordToken);
-await discord.application?.fetch().catch(() => null);
-await waitForDiscordReady(discord);
-await maybeCompletePendingRestartNotice();
-try {
-  const recovery = await turnRecoveryStore.reconcilePending({
-    discord,
-    codex,
-    safeSendToChannel
-  });
-  if (recovery.reconciled > 0) {
-    console.log(
-      `turn recovery complete (reconciled=${recovery.reconciled}, resumed_known=${recovery.resumedKnown}, missing_thread=${recovery.missingThread}, skipped=${recovery.skipped})`
-    );
-  }
-} catch (error) {
-  console.error(`turn recovery failed: ${error.message}`);
-}
-try {
-  const bootstrapSummary = await bootstrapChannelMappings();
-  console.log(
-    `channel bootstrap complete (discovered=${bootstrapSummary.discoveredCwds}, created=${bootstrapSummary.createdChannels}, moved=${bootstrapSummary.movedChannels}, pruned=${bootstrapSummary.prunedBindings}, mapped=${Object.keys(channelSetups).length})`
-  );
-} catch (error) {
-  console.error(`channel bootstrap failed: ${error.message}`);
-}
-startHeartbeatLoop();
+await startBridgeRuntime({
+  codex,
+  fs,
+  generalChannelCwd,
+  discord,
+  discordToken,
+  waitForDiscordReady,
+  maybeCompletePendingRestartNotice,
+  turnRecoveryStore,
+  safeSendToChannel,
+  bootstrapChannelMappings,
+  getMappedChannelCount: () => Object.keys(channelSetups).length,
+  startHeartbeatLoop
+});
 
 process.on("SIGINT", () => {
   void shutdown(0);
@@ -387,19 +377,6 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
   void shutdown(0);
 });
-
-async function shutdown(exitCode) {
-  if (shuttingDown) {
-    return;
-  }
-  shuttingDown = true;
-  runtimeOps?.stopHeartbeatLoop();
-  try {
-    await codex.stop();
-  } catch {}
-  discord.destroy();
-  process.exit(exitCode);
-}
 
 function startHeartbeatLoop() {
   runtimeOps?.startHeartbeatLoop();
