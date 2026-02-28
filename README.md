@@ -17,6 +17,23 @@ Personal Discord bridge for Codex app-server.
 - Handles approval requests via buttons (with command fallback).
 - Uploads attachment files for configured item types (default: `imageView` screenshots).
 
+## Architecture Map
+
+```text
+src/index.js                  Runtime entrypoint and orchestration wiring
+src/config/loadConfig.js      Env + channel config loading/normalization
+src/channels/context.js       Channel/repo context and bindings
+src/codexRpcClient.js         Codex app-server transport
+src/codex/turnRunner.js       Per-channel queue and turn lifecycle
+src/codex/notificationMapper.js Normalized notification boundaries
+src/codex/approvalPayloads.js Approval request/response mapping
+src/attachments/service.js    Attachment candidate extraction + upload policy
+src/render/messageRenderer.js Message render plan, redaction, chunking
+src/cli/**                    Operator CLI (`status`, `doctor`, `reload`)
+src/app/main.ts               TS bootstrap entry used by `start:ts`
+src/types/**                  TS boundary contracts for cutover
+```
+
 ## Requirements
 
 - Bun 1.2+
@@ -77,10 +94,25 @@ On startup, the bot:
 ## Operator CLI
 
 - `bun run cli status` shows runtime paths, binding count, and heartbeat status.
+- `bun run cli logs` tails active bridge stdout/stderr logs (same paths used by launchd when configured).
 - `bun run cli config-validate` validates channel/env config and reports effective defaults.
 - `bun run cli doctor` runs operational diagnostics (token/writable paths/attachment roots).
 - `bun run cli reload [reason]` writes a restart intent file for host-managed supervisors.
+- `bun run cli restart [reason]` alias for `reload`.
 - `scripts/restart-supervisor.sh -- bun run start` runs a host-side process loop that watches `data/restart-request.json` and restarts the bridge externally (with throttle/backoff).
+- Optional global command from any directory:
+  - Run `npm link` once in this repo.
+  - Then use `dc-bridge status`, `dc-bridge logs`, `dc-bridge restart "manual restart"`, etc.
+
+## Permanent Service Notes
+
+- For `launchd`, make sure `ProgramArguments` includes the absolute Bun path after `--`:
+  - `scripts/restart-supervisor.sh -- /absolute/path/to/bun run start`
+- If `ProgramArguments` accidentally inserts an empty entry, supervisor now fails fast with a clear error.
+- Include both Bun and Codex paths in launchd env when needed:
+  - `PATH` should include Bun install dir and Codex install dir.
+  - You can set `CODEX_BIN` explicitly in `EnvironmentVariables`.
+- Supervisor now clears `data/restart-request.json` after consuming a restart request to avoid repeated restarts from stale files.
 
 
 ## Notes
@@ -109,3 +141,5 @@ On startup, the bot:
 - `DISCORD_RESTART_REQUEST_PATH` sets CLI reload signal file path (default: `data/restart-request.json`).
 - `DISCORD_RESTART_ACK_PATH` sets the host-ack marker path written by supervisor (default: `data/restart-ack.json`).
 - `DISCORD_EXIT_ON_RESTART_ACK=1` lets bridge self-exit after ack marker detection (disabled by default).
+- `DISCORD_STDOUT_LOG_PATH` overrides CLI `logs` stdout file path (otherwise launchd plist or `/tmp/codex-discord-bridge.out.log`).
+- `DISCORD_STDERR_LOG_PATH` overrides CLI `logs` stderr file path (otherwise launchd plist or `/tmp/codex-discord-bridge.err.log`).

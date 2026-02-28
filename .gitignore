@@ -12,6 +12,7 @@ data/bridge-heartbeat.json
 data/restart-ack.json
 config/channels.json
 *.log
+com.codex.discord.bridge.plist
 
 # OS/editor noise
 .DS_Store

@@ -24,6 +24,16 @@ if [[ "$#" -eq 0 ]]; then
   exit 1
 fi
 
+# launchd ProgramArguments can accidentally include empty entries.
+while [[ "$#" -gt 0 && -z "${1}" ]]; do
+  shift
+done
+
+if [[ "$#" -eq 0 ]]; then
+  echo "Bridge command is empty after '--' (check LaunchAgent ProgramArguments)." >&2
+  exit 1
+fi
+
 RESTART_REQUEST_PATH="${RESTART_REQUEST_PATH:-data/restart-request.json}"
 RESTART_ACK_PATH="${RESTART_ACK_PATH:-data/restart-ack.json}"
 RESTART_POLL_INTERVAL="${RESTART_POLL_INTERVAL:-3}"
@@ -86,6 +96,7 @@ while true; do
 EOF
       stop_child
       start_child "$@"
+      rm -f "${RESTART_REQUEST_PATH}" 2>/dev/null || true
     fi
   fi
 

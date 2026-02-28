@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "${SOURCE}" ]]; do
+  SOURCE_DIR="$(cd -P -- "$(dirname -- "${SOURCE}")" && pwd)"
+  SOURCE="$(readlink "${SOURCE}")"
+  [[ "${SOURCE}" != /* ]] && SOURCE="${SOURCE_DIR}/${SOURCE}"
+done
+
+SCRIPT_DIR="$(cd -P -- "$(dirname -- "${SOURCE}")" && pwd)"
+PROJECT_ROOT="$(cd -P -- "${SCRIPT_DIR}/.." && pwd)"
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "dc-bridge requires Bun on PATH" >&2
+  exit 1
+fi
+
+exec bun run "${PROJECT_ROOT}/src/cli/index.ts" "$@"

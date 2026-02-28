@@ -155,14 +155,27 @@ Observed patterns and how they compare to us:
 
 ## Phase 0: Baseline + Safety Rails
 
-- [ ] Add this plan doc and keep it updated as decisions are made.
-- [ ] Add lightweight architecture map to README (future).
-- [ ] Define regression checklist for:
+- [x] Add this plan doc and keep it updated as decisions are made.
+- [x] Add lightweight architecture map to README.
+- [x] Define regression checklist for:
   - plain message routing
   - `!commands`
   - approvals
   - outgoing media upload
   - general channel read-only behavior
+
+Phase 0 regression checklist (run before merge/release):
+- [ ] Plain message routing: send a normal message in a managed repo channel and confirm one turn executes and assistant text returns.
+- [ ] `!commands`: verify `!status`, `!where`, `!interrupt`, `!new` all return expected output shapes and no command parsing regressions.
+- [x] Approvals: trigger one approval-required command and verify button + fallback (`!approve`/`!decline`/`!cancel`) paths still map decisions correctly.
+- [x] Outgoing media upload: verify one explicit `imageView` upload and one inferred-text fallback case (`DISCORD_ATTACHMENT_INFER_FROM_TEXT=1`) with last-match-wins behavior.
+- [x] General/read-only behavior: confirm attachment issue notices are suppressed and write-requiring actions respect read-only constraints.
+
+Checklist execution notes (2026-02-28):
+- `Approvals` validated locally via `test/codex.approvalPayloads.test.ts` and transcript snapshot coverage.
+- `Outgoing media upload` validated locally via `test/attachments.integration-smoke.test.ts` (`explicit imageView` and `inferred last-match-wins`).
+- `General/read-only behavior` validated locally via `test/channels.context.test.ts` (`allowFileWrites=false`, `sandboxMode=read-only` in `#general`) and attachment-issue suppression test (`maxAttachmentIssueMessages=0`).
+- `Plain message routing` and `!commands` still require live Discord runtime interaction to fully sign off end-to-end (not reproducible in local test harness without real user-driven Discord events).
 
 ## Phase 1: TypeScript Tooling Without Behavioral Changes
 
@@ -208,7 +221,7 @@ Observed patterns and how they compare to us:
 - [x] Add verbosity levels: `user`, `ops`, `debug`.
 - [x] Gate noisy internals behind `DISCORD_DEBUG_LOGGING` or explicit commands.
 - [x] Ensure "thinking/tooling" indicator remains singular and updates in place where possible.
-- [ ] Add snapshot tests for representative turn transcripts (happy path + failures + approvals + file send).
+- [x] Add snapshot tests for representative turn transcripts (happy path + failures + approvals + file send).
 
 ## Phase 4: Discord + Codex Boundary Contracts
 
@@ -222,7 +235,7 @@ Observed patterns and how they compare to us:
 - [x] Unit tests for approval decision mapping.
 - [x] Integration smoke test for one turn with outbound image upload.
 - [x] Add CI check: typecheck + test.
-- [ ] Add lint stage to CI once lint config is introduced.
+- [x] Add lint stage to CI once lint config is introduced.
 
 ## Phase 6: CLI + Restart Orchestration (New)
 
@@ -238,6 +251,8 @@ Approach:
 Planned commands:
 - [x] `codex-bridge status`
   - show version, config path, state path, channel count, last heartbeat.
+- [x] `codex-bridge logs`
+  - tail active runtime logs (stdout/stderr) using launchd/env-resolved log paths.
 - [x] `codex-bridge config validate`
   - validate env/config and print actionable errors.
 - [x] `codex-bridge doctor`
@@ -313,6 +328,12 @@ Why this fits sandbox constraints:
 - 2026-02-28: Phase 6 started: implemented operator CLI commands (`status`, `config-validate`, `doctor`, `reload`), added runtime heartbeat writer, and documented env paths for heartbeat/restart signal files.
 - 2026-02-28: Added host supervisor helper script (`scripts/restart-supervisor.sh`) that monitors restart-request signals and restarts with throttle/backoff guardrails.
 - 2026-02-28: Added optional restart-ack handshake (`DISCORD_RESTART_ACK_PATH` + `DISCORD_EXIT_ON_RESTART_ACK`) so bridge can self-exit cleanly when host supervisor acknowledges restart.
+- 2026-02-28: Follow-up ops polish: added `restart` CLI alias, optional `dc-bridge` global bin entry, launchd hardening notes, and supervisor stale-restart-request cleanup.
+- 2026-02-28: Phase 0 cleanup completed: README architecture map added and regression checklist formalized in this plan.
+- 2026-02-28: Added committed turn transcript snapshot fixture/tests (`happy path`, `failure`, `approval`, `file send`) to lock renderer/boundary behavior.
+- 2026-02-28: Added ESLint flat config + `bun run lint` and wired CI lint stage before typecheck/tests.
+- 2026-02-28: Executed local checklist validation pass; signed off approvals/media/read-only via tests and documented live-Discord-only blockers for message routing/`!commands`.
+- 2026-02-28: Added `logs` operator CLI command to tail active session logs and wired log path resolution (env override -> launchd plist -> `/tmp` fallback).
 
 ## Reference Links
 

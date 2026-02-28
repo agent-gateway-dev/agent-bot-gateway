@@ -1,13 +1,16 @@
 import process from "node:process";
 import { runConfigValidateCommand } from "./commands/config-validate.js";
 import { runDoctorCommand } from "./commands/doctor.js";
+import { runLogsCommand } from "./commands/logs.js";
 import { runReloadCommand } from "./commands/reload.js";
 import { runStatusCommand } from "./commands/status.js";
 import type { CliCommand, CliContext } from "../types/events.js";
 
 const commands: Record<string, CliCommand["run"]> = {
   status: runStatusCommand,
+  logs: runLogsCommand,
   reload: runReloadCommand,
+  restart: runReloadCommand,
   "config-validate": runConfigValidateCommand,
   doctor: runDoctorCommand
 };
@@ -19,7 +22,9 @@ function printUsage(): void {
       "",
       "Commands:",
       "  status            Show runtime paths, binding count, and heartbeat summary",
+      "  logs              Tail active bridge logs (stdout/stderr)",
       "  reload [reason]   Write host-managed restart request signal file",
+      "  restart [reason]  Alias for reload",
       "  config-validate   Validate channel/env config",
       "  doctor            Run operational diagnostics"
     ].join("\n")

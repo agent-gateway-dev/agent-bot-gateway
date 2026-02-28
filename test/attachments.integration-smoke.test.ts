@@ -107,4 +107,38 @@ describe("attachments integration smoke", () => {
     expect(String(sentPayloads[0]?.content ?? "")).toContain("two.png");
     expect(String(sentPayloads[0]?.content ?? "")).not.toContain("one.png");
   });
+
+  test("suppresses attachment issue notices when max issue messages is zero", async () => {
+    const issueMessages: string[] = [];
+    const tracker = {
+      channel: { id: "channel-3" },
+      cwd: "/tmp",
+      sentAttachmentKeys: new Set<string>(),
+      seenAttachmentIssueKeys: new Set<string>(),
+      attachmentIssueCount: 0
+    };
+
+    await maybeSendAttachmentsForItem(
+      tracker,
+      { type: "imageView", id: "item-3", path: "https://example.com/image.png" },
+      {
+        attachmentsEnabled: true,
+        attachmentItemTypes: new Set(["imageView"]),
+        attachmentMaxBytes: 8 * 1024 * 1024,
+        attachmentRoots: ["/tmp"],
+        imageCacheDir: "/tmp",
+        attachmentInferFromText: false,
+        statusLabelForItemType: () => "image view",
+        safeSendToChannel: async (_channel: unknown, text: string) => {
+          issueMessages.push(text);
+          return null;
+        },
+        safeSendToChannelPayload: async () => null,
+        truncateStatusText: (text: string) => text,
+        maxAttachmentIssueMessages: 0
+      }
+    );
+
+    expect(issueMessages).toEqual([]);
+  });
 });

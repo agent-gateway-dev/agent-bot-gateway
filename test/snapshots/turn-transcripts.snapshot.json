@@ -1,0 +1,99 @@
+{
+  "happyPath": {
+    "notifications": [
+      {
+        "kind": "item_lifecycle",
+        "method": "item/started",
+        "threadId": "thread-1",
+        "state": "started",
+        "item": {
+          "id": "item-1",
+          "type": "agentMessage"
+        }
+      },
+      {
+        "kind": "agent_delta",
+        "method": "item/agentMessage/delta",
+        "threadId": "thread-1",
+        "delta": "Applied fix and generated summary."
+      },
+      {
+        "kind": "item_lifecycle",
+        "method": "item/completed",
+        "threadId": "thread-1",
+        "state": "completed",
+        "item": {
+          "id": "item-1",
+          "type": "agentMessage"
+        }
+      },
+      {
+        "kind": "turn_completed",
+        "method": "turn/completed",
+        "threadId": "thread-1"
+      }
+    ],
+    "renderPlanUser": {
+      "primaryMessage": "Done. Preview ![img](final.png) and logs at run.log",
+      "statusMessages": [],
+      "attachments": []
+    },
+    "renderPlanOps": {
+      "primaryMessage": "Done. Preview ![img](final.png) and logs at run.log",
+      "statusMessages": [
+        "```diff\n+ one line changed\n```"
+      ],
+      "attachments": []
+    }
+  },
+  "failurePath": {
+    "notification": {
+      "kind": "error",
+      "method": "error",
+      "threadId": "thread-2",
+      "errorMessage": "Sandbox denied write access."
+    },
+    "renderPlan": {
+      "primaryMessage": "Failed while updating index.ts",
+      "statusMessages": [
+        "stderr: Permission denied"
+      ],
+      "attachments": []
+    }
+  },
+  "approvalPath": {
+    "parsedButton": {
+      "token": "0042",
+      "decision": "accept"
+    },
+    "applyPatchAccept": {
+      "decision": "approved"
+    },
+    "execDecline": {
+      "decision": "denied"
+    },
+    "userInputAccept": {
+      "answers": {
+        "confirm": {
+          "answers": [
+            "Continue"
+          ]
+        }
+      }
+    }
+  },
+  "fileSendPath": {
+    "explicitImageView": [
+      {
+        "path": "/tmp/screens/latest.png",
+        "intent": "explicit_user_request"
+      }
+    ],
+    "inferredLastMatch": [
+      {
+        "path": "/tmp/screens/two.png",
+        "intent": "inferred_text_fallback"
+      }
+    ]
+  }
+}

@@ -81,7 +81,7 @@ export function createTurnRunner(deps) {
             turnParams.sandboxPolicy = sandboxPolicy;
           }
 
-          await codex.request("turn/start", turnParams);
+          await requestTurnStartWithReconnectRetry(() => codex.request("turn/start", turnParams));
           await turn.promise;
         };
 
@@ -116,6 +116,24 @@ export function createTurnRunner(deps) {
     }
 
     queue.running = false;
+  }
+
+  async function requestTurnStartWithReconnectRetry(startTurnRequest) {
+    const maxAttempts = 5;
+    let attempt = 1;
+    while (true) {
+      try {
+        return await startTurnRequest();
+      } catch (error) {
+        const message = String(error?.message ?? "");
+        const shouldRetry = isTransientReconnectError(message) && attempt < maxAttempts;
+        if (!shouldRetry) {
+          throw error;
+        }
+        await delay(Math.min(5_000, 500 * attempt));
+        attempt += 1;
+      }
+    }
   }
 
   async function ensureThreadId(repoChannelId, setup) {
@@ -260,4 +278,17 @@ export function createTurnRunner(deps) {
     abortActiveTurn,
     findActiveTurnByRepoChannel
   };
+}
+
+function isTransientReconnectError(message) {
+  if (!message) {
+    return false;
+  }
+  return /reconnecting\.\.\.\s*\d+\/\d+/i.test(message) || /temporarily unavailable/i.test(message);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
