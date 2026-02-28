@@ -1,23 +1,18 @@
-import { ChannelType, MessageFlags } from "discord.js";
-import { buildBridgeRuntimes } from "./buildRuntimes.js";
-import { createRuntimeOps } from "./runtimeOps.js";
-import { isDiscordMissingPermissionsError, waitForDiscordReady } from "./runtimeUtils.js";
+import { waitForDiscordReady } from "./runtimeUtils.js";
 import { createShutdownHandler } from "./shutdown.js";
 import { registerShutdownSignals } from "./signalHandlers.js";
 import { startBridgeRuntime } from "./startup.js";
 import { wireBridgeListeners } from "./wireListeners.js";
-import { truncateStatusText } from "../turns/turnFormatting.js";
+import { createRuntimeOpsContext } from "./createRuntimeOpsContext.js";
+import { attachBuiltRuntimes } from "./attachBuiltRuntimes.js";
 
 export async function runBridgeProcess(context) {
   const {
     fs,
     path,
-    execFileAsync,
     runtimeEnv,
     discordToken,
     debugLog,
-    config,
-    state,
     getChannelSetups,
     setChannelSetups,
     discord,
@@ -32,27 +27,7 @@ export async function runBridgeProcess(context) {
     turnRecoveryStore,
     createApprovalToken
   } = context;
-  const {
-    approvalButtonPrefix,
-    projectsCategoryName,
-    managedChannelTopicPrefix,
-    managedThreadTopicPrefix,
-    repoRootPath,
-    codexBin,
-    codexHomeEnv,
-    statePath,
-    configPath,
-    renderVerbosity,
-    generalChannelId,
-    generalChannelName,
-    generalChannelCwd,
-    heartbeatPath,
-    restartRequestPath,
-    restartAckPath,
-    restartNoticePath,
-    heartbeatIntervalMs,
-    exitOnRestartAck
-  } = runtimeEnv;
+  const { generalChannelCwd } = runtimeEnv;
 
   wireBridgeListeners({
     codex,
@@ -63,51 +38,22 @@ export async function runBridgeProcess(context) {
     handleInteraction: runtimeAdapters.handleInteraction
   });
 
-  refs.runtimeOps = createRuntimeOps({
+  refs.runtimeOps = createRuntimeOpsContext({
     fs,
     path,
     debugLog,
     activeTurns,
     pendingApprovals,
-    heartbeatPath,
-    restartRequestPath,
-    restartAckPath,
-    restartNoticePath,
     processStartedAt,
-    heartbeatIntervalMs,
-    exitOnRestartAck,
     safeReply,
     safeSendToChannel,
-    truncateStatusText,
-    shutdown: (...args) => refs.shutdown?.(...args)
+    refs,
+    runtimeEnv
   });
 
-  const { bootstrapChannelMappings, notificationRuntime, serverRequestRuntime, discordRuntime } = buildBridgeRuntimes({
-    ChannelType,
-    MessageFlags,
-    path,
-    fs,
-    execFileAsync,
-    discord,
-    codex,
-    config,
-    state,
-    activeTurns,
-    pendingApprovals,
-    approvalButtonPrefix,
-    projectsCategoryName,
-    managedChannelTopicPrefix,
-    managedThreadTopicPrefix,
-    repoRootPath,
-    codexBin,
-    codexHomeEnv,
-    statePath,
-    configPath,
-    renderVerbosity,
-    generalChannelId,
-    generalChannelName,
-    generalChannelCwd,
-    isDiscordMissingPermissionsError,
+  const { bootstrapChannelMappings } = attachBuiltRuntimes({
+    context,
+    runtimeEnv,
     getChannelSetups,
     setChannelSetups,
     runtimeAdapters,
@@ -116,11 +62,8 @@ export async function runBridgeProcess(context) {
     debugLog,
     turnRecoveryStore,
     createApprovalToken,
-    sendChunkedToChannel: runtimeAdapters.sendChunkedToChannel
+    refs
   });
-  refs.notificationRuntime = notificationRuntime;
-  refs.serverRequestRuntime = serverRequestRuntime;
-  refs.discordRuntime = discordRuntime;
 
   refs.shutdown = createShutdownHandler({
     codex,
