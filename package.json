@@ -7,10 +7,17 @@
   "packageManager": "bun@1.2.5",
   "scripts": {
     "start": "bun run src/index.js",
+    "start:ts": "bun run src/app/main.ts",
+    "cli": "bun run src/cli/index.ts",
+    "typecheck": "tsc --noEmit",
     "scan:secrets": "bash ./scripts/scan-secrets.sh"
   },
   "dependencies": {
     "discord.js": "^14.20.0",
     "dotenv": "^16.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
   }
 }

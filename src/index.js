@@ -6,15 +6,27 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import dotenv from "dotenv";
 import {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
   ChannelType,
   Client,
   GatewayIntentBits,
   MessageFlags
 } from "discord.js";
 import { CodexRpcClient } from "./codexRpcClient.js";
+import { maybeSendAttachmentsForItem as maybeSendAttachmentsForItemFromService } from "./attachments/service.js";
+import { resolveRepoContext, isGeneralChannel } from "./channels/context.js";
+import { loadConfig, parseAttachmentItemTypes, parsePathListEnv } from "./config/loadConfig.js";
+import {
+  buildApprovalActionRows,
+  buildResponseForServerRequest,
+  describeToolRequestUserInput,
+  parseApprovalButtonCustomId
+} from "./codex/approvalPayloads.js";
+import { createTurnRunner } from "./codex/turnRunner.js";
+import {
+  redactLocalPathsForDiscord,
+  sendChunkedToChannel as sendChunkedToChannelFromRenderer,
+  truncateForDiscordMessage
+} from "./render/messageRenderer.js";
 import { StateStore } from "./stateStore.js";
 
 dotenv.config();
@@ -64,7 +76,7 @@ const extraWritableRoots = parsePathListEnv(process.env.CODEX_EXTRA_WRITABLE_ROO
 const defaultModel = "gpt-5.3-codex";
 const defaultEffort = "medium";
 
-const config = await loadConfig(configPath);
+const config = await loadConfig(configPath, { defaultModel, defaultEffort });
 let channelSetups = { ...config.channels };
 const state = new StateStore(statePath);
 await state.load();
@@ -89,6 +101,17 @@ const queues = new Map();
 const activeTurns = new Map();
 const pendingApprovals = new Map();
 let nextApprovalToken = 1;
+const turnRunner = createTurnRunner({
+  queues,
+  activeTurns,
+  state,
+  codex,
+  config,
+  safeReply,
+  buildSandboxPolicyForTurn,
+  isThreadNotFoundError,
+  finalizeTurn
+});
 
 codex.on("stderr", (line) => {
   console.error(`[codex] ${line}`);
@@ -191,7 +214,15 @@ async function handleMessage(message) {
     return;
   }
 
-  const context = resolveRepoContext(message);
+  const context = resolveRepoContext(message, {
+    channelSetups,
+    config,
+    generalChannel: {
+      id: generalChannelId,
+      name: generalChannelName,
+      cwd: generalChannelCwd
+    }
+  });
   if (content.startsWith("!")) {
     const [commandRaw, ...restParts] = content.split(/\s+/);
     const command = commandRaw.toLowerCase();
@@ -228,7 +259,7 @@ async function handleInteraction(interaction) {
   if (!interaction.isButton()) {
     return;
   }
-  const parsed = parseApprovalButtonCustomId(interaction.customId);
+  const parsed = parseApprovalButtonCustomId(interaction.customId, approvalButtonPrefix);
   if (!parsed) {
     return;
   }
@@ -359,17 +390,15 @@ async function downloadImageAttachments(attachments, messageId) {
 }
 
 async function downloadImageAttachment(attachment, messageId, ordinal) {
-  const sourceUrl = typeof attachment?.url === "string" ? attachment.url : null;
-  if (!sourceUrl) {
+  const sourceUrls = [attachment?.proxyURL, attachment?.url]
+    .filter((value) => typeof value === "string" && value.trim().length > 0)
+    .map((value) => value.trim());
+  if (sourceUrls.length === 0) {
     return null;
   }
 
   try {
-    const response = await fetch(sourceUrl);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    const bytes = Buffer.from(await response.arrayBuffer());
+    const bytes = await fetchDiscordAttachmentBytes(sourceUrls);
     if (bytes.length === 0) {
       return null;
     }
@@ -382,6 +411,41 @@ async function downloadImageAttachment(attachment, messageId, ordinal) {
     console.warn(`failed to download Discord image attachment ${attachment?.id ?? "unknown"}: ${error.message}`);
     return null;
   }
+}
+
+async function fetchDiscordAttachmentBytes(sourceUrls) {
+  const seen = new Set();
+  const urls = [];
+  for (const sourceUrl of sourceUrls) {
+    if (!seen.has(sourceUrl)) {
+      seen.add(sourceUrl);
+      urls.push(sourceUrl);
+    }
+  }
+
+  const authHeaders = discordToken ? { Authorization: `Bot ${discordToken}` } : null;
+  const attempts = [];
+  for (const sourceUrl of urls) {
+    attempts.push({ sourceUrl, headers: authHeaders });
+    attempts.push({ sourceUrl, headers: null });
+  }
+
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      const response = await fetch(attempt.sourceUrl, {
+        headers: attempt.headers ?? undefined
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError ?? new Error("attachment download failed");
 }
 
 function guessImageExtension(attachment) {
@@ -401,49 +465,6 @@ function guessImageExtension(attachment) {
     "image/svg+xml": ".svg"
   };
   return known[contentType] ?? ".png";
-}
-
-function resolveRepoContext(message) {
-  if (message.channel.type !== ChannelType.GuildText) {
-    return null;
-  }
-
-  const setup = channelSetups[message.channelId];
-  if (!setup) {
-    if (!isGeneralChannel(message.channel)) {
-      return null;
-    }
-    return {
-      repoChannelId: message.channelId,
-      setup: {
-        cwd: generalChannelCwd,
-        model: config.defaultModel,
-        mode: "general",
-        sandboxMode: "read-only",
-        allowFileWrites: false
-      }
-    };
-  }
-
-  return {
-    repoChannelId: message.channelId,
-    setup: {
-      ...setup,
-      mode: "repo",
-      sandboxMode: config.sandboxMode,
-      allowFileWrites: true
-    }
-  };
-}
-
-function isGeneralChannel(channel) {
-  if (channel?.type !== ChannelType.GuildText) {
-    return false;
-  }
-  if (generalChannelId) {
-    return channel.id === generalChannelId;
-  }
-  return channel.name.toLowerCase() === generalChannelName;
 }
 
 async function handleCommand(message, content, context) {
@@ -1227,230 +1248,27 @@ async function safeReply(message, content) {
 }
 
 function enqueuePrompt(repoChannelId, job) {
-  const queue = getQueue(repoChannelId);
-  queue.jobs.push(job);
-  if (!queue.running) {
-    void processQueue(repoChannelId);
-  }
+  turnRunner.enqueuePrompt(repoChannelId, job);
 }
 
 function getQueue(repoChannelId) {
-  const existing = queues.get(repoChannelId);
-  if (existing) {
-    return existing;
-  }
-  const created = { running: false, jobs: [] };
-  queues.set(repoChannelId, created);
-  return created;
+  return turnRunner.getQueue(repoChannelId);
 }
 
 async function processQueue(repoChannelId) {
-  const queue = getQueue(repoChannelId);
-  if (queue.running) {
-    return;
-  }
-  queue.running = true;
-
-  while (queue.jobs.length > 0) {
-    const job = queue.jobs.shift();
-    let startedThreadId = null;
-    let turnPromise = null;
-    try {
-      let threadId = await ensureThreadId(repoChannelId, job.setup);
-      startedThreadId = threadId;
-
-      const statusMessage = await safeReply(job.message, "⏳ Thinking...");
-      if (!statusMessage) {
-        throw new Error("Cannot send response in this channel (channel unavailable).");
-      }
-
-      const model = job.setup.model ?? config.defaultModel;
-      const effort = config.defaultEffort;
-      const approvalPolicy = config.approvalPolicy;
-      const sandboxMode = job.setup.sandboxMode ?? config.sandboxMode;
-      const sandboxPolicy = await buildSandboxPolicyForTurn(sandboxMode, job.setup.cwd);
-
-      const runTurn = async (targetThreadId) => {
-        startedThreadId = targetThreadId;
-        const turn = createActiveTurn(targetThreadId, repoChannelId, statusMessage, job.setup.cwd, {
-          allowFileWrites: job.setup.allowFileWrites !== false
-        });
-        turnPromise = turn.promise;
-
-        const turnParams = {
-          threadId: targetThreadId,
-          input: job.inputItems
-        };
-        if (model) {
-          turnParams.model = model;
-        }
-        if (effort) {
-          turnParams.effort = effort;
-        }
-        if (approvalPolicy) {
-          turnParams.approvalPolicy = approvalPolicy;
-        }
-        if (sandboxPolicy) {
-          turnParams.sandboxPolicy = sandboxPolicy;
-        }
-
-        await codex.request("turn/start", turnParams);
-        await turn.promise;
-      };
-
-      try {
-        await runTurn(threadId);
-      } catch (error) {
-        if (!isThreadNotFoundError(error)) {
-          throw error;
-        }
-
-        abortActiveTurn(threadId, error);
-        if (turnPromise) {
-          await turnPromise.catch(() => {});
-        }
-
-        state.clearBinding(repoChannelId);
-        await state.save();
-
-        threadId = await ensureThreadId(repoChannelId, job.setup);
-        await runTurn(threadId);
-      }
-    } catch (error) {
-      if (startedThreadId && activeTurns.has(startedThreadId)) {
-        await finalizeTurn(startedThreadId, error);
-        if (turnPromise) {
-          await turnPromise.catch(() => {});
-        }
-      } else if (!turnPromise) {
-        await safeReply(job.message, `❌ ${error.message}`);
-      }
-    }
-  }
-
-  queue.running = false;
+  await turnRunner.processQueue(repoChannelId);
 }
 
 async function ensureThreadId(repoChannelId, setup) {
-  const existingBinding = state.getBinding(repoChannelId);
-  let existingThreadId = existingBinding?.codexThreadId ?? null;
-  if (existingBinding?.cwd && path.resolve(existingBinding.cwd) !== path.resolve(setup.cwd)) {
-    state.clearBinding(repoChannelId);
-    await state.save();
-    existingThreadId = null;
-  }
-  const approvalPolicy = config.approvalPolicy;
-  const sandboxMode = setup.sandboxMode ?? config.sandboxMode;
-  if (existingThreadId) {
-    try {
-      const resumeParams = {
-        threadId: existingThreadId,
-        cwd: setup.cwd
-      };
-      if (approvalPolicy) {
-        resumeParams.approvalPolicy = approvalPolicy;
-      }
-      if (sandboxMode) {
-        resumeParams.sandbox = sandboxMode;
-      }
-      await codex.request("thread/resume", resumeParams);
-      return existingThreadId;
-    } catch (error) {
-      if (!isThreadNotFoundError(error)) {
-        throw error;
-      }
-      state.clearBinding(repoChannelId);
-      await state.save();
-    }
-  }
-
-  const startParams = { cwd: setup.cwd };
-  const model = setup.model ?? config.defaultModel;
-  const effort = config.defaultEffort;
-  if (model) {
-    startParams.model = model;
-  }
-  if (effort) {
-    startParams.effort = effort;
-  }
-  if (approvalPolicy) {
-    startParams.approvalPolicy = approvalPolicy;
-  }
-  if (sandboxMode) {
-    startParams.sandbox = sandboxMode;
-  }
-
-  const result = await codex.request("thread/start", startParams);
-  const threadId = result?.thread?.id;
-  if (!threadId) {
-    throw new Error("thread/start did not return thread id");
-  }
-
-  state.setBinding(repoChannelId, {
-    codexThreadId: threadId,
-    repoChannelId,
-    cwd: setup.cwd
-  });
-  await state.save();
-  return threadId;
+  return turnRunner.ensureThreadId(repoChannelId, setup);
 }
 
 function createActiveTurn(threadId, repoChannelId, message, cwd, options = {}) {
-  if (activeTurns.has(threadId)) {
-    throw new Error("Turn already active for this thread");
-  }
-
-  let resolveTurn;
-  let rejectTurn;
-  const promise = new Promise((resolve, reject) => {
-    resolveTurn = resolve;
-    rejectTurn = reject;
-  });
-
-  activeTurns.set(threadId, {
-    threadId,
-    repoChannelId,
-    statusMessage: message,
-    statusMessageId: message.id,
-    channel: message.channel,
-    cwd: typeof cwd === "string" && cwd ? cwd : null,
-    allowFileWrites: options.allowFileWrites !== false,
-    sentAttachmentKeys: new Set(),
-    fullText: "",
-    seenDelta: false,
-    currentStatusLine: "⏳ Thinking...",
-    lastStatusUpdateLine: "",
-    pendingCompletionReactions: new Map(),
-    lastRenderedContent: "",
-    completed: false,
-    failed: false,
-    failureMessage: "",
-    itemStatusMessages: new Map(),
-    itemStatusQueues: new Map(),
-    fileChangeSummary: new Map(),
-    statusSyntheticCounter: 0,
-    flushTimer: null,
-    lastFlushAt: 0,
-    resolve: resolveTurn,
-    reject: rejectTurn
-  });
-
-  return { promise };
+  return turnRunner.createActiveTurn(threadId, repoChannelId, message, cwd, options);
 }
 
 function abortActiveTurn(threadId, error) {
-  const tracker = activeTurns.get(threadId);
-  if (!tracker) {
-    return;
-  }
-
-  if (tracker.flushTimer) {
-    clearTimeout(tracker.flushTimer);
-    tracker.flushTimer = null;
-  }
-
-  activeTurns.delete(threadId);
-  tracker.reject(error ?? new Error("Turn aborted"));
+  return turnRunner.abortActiveTurn(threadId, error);
 }
 
 async function handleNotification({ method, params }) {
@@ -1647,7 +1465,7 @@ async function handleServerRequest({ id, method, params }) {
   );
   const approvalMessage = await channel.send({
     content: approvalContent,
-    components: buildApprovalActionRows(token)
+    components: buildApprovalActionRows(token, approvalButtonPrefix)
   });
   const record = pendingApprovals.get(token);
   if (record) {
@@ -1735,148 +1553,6 @@ function buildUnsupportedToolCallResponse(originalMethod) {
   return { ...modern, ...legacy };
 }
 
-function buildResponseForServerRequest(method, params, decision) {
-  if (method === "item/tool/requestUserInput") {
-    return buildToolRequestUserInputResponse(params, decision);
-  }
-  if (method === "execCommandApproval" || method === "applyPatchApproval") {
-    return { decision: mapReviewDecision(decision) };
-  }
-  return { decision };
-}
-
-function mapReviewDecision(decision) {
-  if (decision === "accept") {
-    return "approved";
-  }
-  if (decision === "cancel") {
-    return "abort";
-  }
-  return "denied";
-}
-
-function buildToolRequestUserInputResponse(params, decision) {
-  const answers = {};
-  const questions = Array.isArray(params?.questions) ? params.questions : [];
-  for (const question of questions) {
-    if (typeof question?.id !== "string" || !question.id) {
-      continue;
-    }
-    const answer = pickToolRequestAnswer(question, decision);
-    answers[question.id] = { answers: [answer] };
-  }
-  return { answers };
-}
-
-function pickToolRequestAnswer(question, decision) {
-  const options = Array.isArray(question?.options) ? question.options : [];
-  if (options.length > 0) {
-    const labels = options
-      .map((option) => (typeof option?.label === "string" ? option.label.trim() : ""))
-      .filter((label) => label.length > 0);
-    const matched = findDecisionOptionLabel(labels, decision);
-    if (matched) {
-      return matched;
-    }
-    if (labels.length > 0) {
-      return labels[0];
-    }
-  }
-
-  if (decision === "accept") {
-    return "accept";
-  }
-  if (decision === "cancel") {
-    return "cancel";
-  }
-  return "decline";
-}
-
-function findDecisionOptionLabel(labels, decision) {
-  const normalized = labels.map((label) => ({ original: label, lower: label.toLowerCase() }));
-  const needlesByDecision = {
-    accept: ["accept", "approve", "allow", "yes", "continue", "proceed", "ok"],
-    decline: ["decline", "reject", "deny", "disallow", "no"],
-    cancel: ["cancel", "abort", "stop", "dismiss"]
-  };
-  const needles = needlesByDecision[decision] ?? [];
-
-  for (const needle of needles) {
-    const exact = normalized.find((entry) => entry.lower === needle);
-    if (exact) {
-      return exact.original;
-    }
-  }
-  for (const needle of needles) {
-    const partial = normalized.find((entry) => entry.lower.includes(needle));
-    if (partial) {
-      return partial.original;
-    }
-  }
-
-  return null;
-}
-
-function describeToolRequestUserInput(params) {
-  const lines = [];
-  const questions = Array.isArray(params?.questions) ? params.questions : [];
-  for (let index = 0; index < questions.length; index += 1) {
-    const question = questions[index];
-    const header = typeof question?.header === "string" && question.header ? question.header : `q${index + 1}`;
-    const prompt =
-      typeof question?.question === "string" && question.question ? question.question : "(no prompt text)";
-    lines.push(`question ${index + 1} (${header}): ${prompt}`);
-    if (Array.isArray(question?.options) && question.options.length > 0) {
-      const optionLabels = question.options
-        .map((option) => (typeof option?.label === "string" ? option.label.trim() : ""))
-        .filter((label) => label.length > 0);
-      if (optionLabels.length > 0) {
-        lines.push(`options: ${optionLabels.map((label) => `\`${label}\``).join(", ")}`);
-      }
-    }
-  }
-  return lines;
-}
-
-function buildApprovalActionRows(token, options = {}) {
-  const disabled = options.disabled === true;
-  const selectedDecision = options.selectedDecision ?? null;
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`${approvalButtonPrefix}${token}:accept`)
-      .setLabel(selectedDecision === "accept" ? "Approved" : "Approve")
-      .setStyle(ButtonStyle.Success)
-      .setDisabled(disabled),
-    new ButtonBuilder()
-      .setCustomId(`${approvalButtonPrefix}${token}:decline`)
-      .setLabel(selectedDecision === "decline" ? "Declined" : "Decline")
-      .setStyle(ButtonStyle.Danger)
-      .setDisabled(disabled),
-    new ButtonBuilder()
-      .setCustomId(`${approvalButtonPrefix}${token}:cancel`)
-      .setLabel(selectedDecision === "cancel" ? "Canceled" : "Cancel")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(disabled)
-  );
-  return [row];
-}
-
-function parseApprovalButtonCustomId(customId) {
-  if (typeof customId !== "string" || !customId.startsWith(approvalButtonPrefix)) {
-    return null;
-  }
-  const payload = customId.slice(approvalButtonPrefix.length);
-  const [token, decision] = payload.split(":");
-  if (!token || !isApprovalDecision(decision)) {
-    return null;
-  }
-  return { token, decision };
-}
-
-function isApprovalDecision(decision) {
-  return decision === "accept" || decision === "decline" || decision === "cancel";
-}
-
 function findLatestPendingApprovalTokenForChannel(repoChannelId) {
   let latest = null;
   for (const [token, approval] of pendingApprovals.entries()) {
@@ -1926,7 +1602,7 @@ async function markApprovalResolved(approval, token, decision, actorMention) {
   await approvalMessage
     .edit({
       content,
-      components: buildApprovalActionRows(token, { disabled: true, selectedDecision: decision })
+      components: buildApprovalActionRows(token, approvalButtonPrefix, { disabled: true, selectedDecision: decision })
     })
     .catch(() => null);
 }
@@ -1969,12 +1645,7 @@ function findRepoChannelIdByCodexThreadId(threadId) {
 }
 
 function findActiveTurnByRepoChannel(repoChannelId) {
-  for (const tracker of activeTurns.values()) {
-    if (tracker.repoChannelId === repoChannelId) {
-      return tracker;
-    }
-  }
-  return null;
+  return turnRunner.findActiveTurnByRepoChannel(repoChannelId);
 }
 
 function scheduleFlush(tracker) {
@@ -2027,7 +1698,7 @@ async function finalizeTurn(threadId, error) {
 
   const summaryText = tracker.fullText.trim();
   if (summaryText) {
-    await sendChunkedToChannel(tracker.channel, summaryText);
+    await sendChunkedToChannel(tracker.channel, redactLocalPathsForDiscord(summaryText));
   }
 
   const diffBlock = buildFileDiffSection(tracker);
@@ -2293,6 +1964,9 @@ function summarizeItemForStatus(item, state) {
     return [`🛠️ Tool: \`${truncateStatusText(`${server}/${tool}`, 140)}\``];
   }
   if (item.type === "imageView") {
+    if (state !== "started") {
+      return [];
+    }
     const fileName = typeof item.path === "string" && item.path ? path.basename(item.path) : "image";
     return [`🖼️ Image: ${truncateStatusText(fileName, 140)}`];
   }
@@ -2546,18 +2220,6 @@ function truncateStatusText(text, limit) {
   return `${oneLine.slice(0, Math.max(1, limit - 3))}...`;
 }
 
-function truncateForDiscordMessage(text, limit = discordMaxMessageLength) {
-  if (typeof text !== "string") {
-    return "";
-  }
-  if (text.length <= limit) {
-    return text;
-  }
-  const suffix = "\n...[truncated]";
-  const headLimit = Math.max(0, limit - suffix.length);
-  return `${text.slice(0, headLimit)}${suffix}`;
-}
-
 async function buildSandboxPolicyForTurn(mode, cwd) {
   if (mode === "danger-full-access") {
     return { type: "dangerFullAccess" };
@@ -2681,233 +2343,21 @@ async function safeSendToChannelPayload(channel, payload) {
 }
 
 async function maybeSendAttachmentsForItem(tracker, item) {
-  if (!attachmentsEnabled || !tracker?.channel || !item || typeof item !== "object") {
-    return;
-  }
-  const itemType = typeof item.type === "string" ? item.type : "";
-  if (!itemType || !attachmentItemTypes.has(itemType)) {
-    return;
-  }
-
-  const paths = extractAttachmentPaths(item);
-  if (paths.length === 0) {
-    return;
-  }
-
-  for (const filePath of paths) {
-    await sendAttachmentForPath(tracker, filePath, { itemType, itemId: item.id });
-  }
-}
-
-function extractAttachmentPaths(item) {
-  const paths = [];
-  const pathLikeKeys = new Set(["path", "file", "filename", "name", "outputPath", "artifactPath"]);
-  const add = (value) => {
-    if (typeof value !== "string") {
-      return;
-    }
-    const trimmed = value.trim();
-    if (trimmed) {
-      paths.push(trimmed);
-    }
-  };
-
-  add(item.path);
-  add(item.file);
-  add(item.filename);
-  add(item.name);
-  add(item.outputPath);
-  add(item.artifactPath);
-
-  if (Array.isArray(item.paths)) {
-    for (const value of item.paths) {
-      add(value);
-    }
-  }
-
-  if (Array.isArray(item.files)) {
-    for (const entry of item.files) {
-      if (typeof entry === "string") {
-        add(entry);
-      } else if (entry && typeof entry === "object") {
-        add(entry.path);
-        add(entry.file);
-        add(entry.name);
-        add(entry.filename);
-      }
-    }
-  }
-
-  // Pick up nested path values from result payloads (e.g., tool outputs).
-  const queue = [{ value: item, depth: 0 }];
-  const seen = new Set();
-  while (queue.length > 0 && paths.length < 64) {
-    const current = queue.shift();
-    if (!current || current.depth > 3) {
-      continue;
-    }
-    const { value, depth } = current;
-    if (!value || typeof value !== "object") {
-      continue;
-    }
-    if (seen.has(value)) {
-      continue;
-    }
-    seen.add(value);
-
-    if (Array.isArray(value)) {
-      for (const entry of value) {
-        queue.push({ value: entry, depth: depth + 1 });
-      }
-      continue;
-    }
-
-    for (const [key, entry] of Object.entries(value)) {
-      if (pathLikeKeys.has(key) && typeof entry === "string") {
-        add(entry);
-      }
-      if (entry && typeof entry === "object") {
-        queue.push({ value: entry, depth: depth + 1 });
-      }
-    }
-  }
-
-  return [...new Set(paths)];
-}
-
-async function sendAttachmentForPath(tracker, filePath, { itemType, itemId } = {}) {
-  if (!attachmentsEnabled || !tracker?.channel) {
-    return;
-  }
-  if (typeof filePath !== "string" || !filePath.trim()) {
-    return;
-  }
-  const trimmed = filePath.trim();
-  if (/^https?:\/\//i.test(trimmed)) {
-    await safeSendToChannel(
-      tracker.channel,
-      `Attachment skipped (remote URL not supported): \`${truncateStatusText(trimmed, 120)}\``
-    );
-    return;
-  }
-
-  const resolvedInputPath = path.isAbsolute(trimmed)
-    ? trimmed
-    : typeof tracker?.cwd === "string" && tracker.cwd
-      ? path.resolve(tracker.cwd, trimmed)
-      : path.resolve(trimmed);
-
-  let realPath;
-  try {
-    realPath = await fs.realpath(resolvedInputPath);
-  } catch {
-    await safeSendToChannel(tracker.channel, `Attachment missing: \`${path.basename(trimmed)}\``);
-    return;
-  }
-
-  const allowedRoots = resolveAttachmentRoots(tracker);
-  if (!isPathWithinRoots(realPath, allowedRoots)) {
-    await safeSendToChannel(
-      tracker.channel,
-      `Attachment blocked (outside allowed roots): \`${path.basename(realPath)}\``
-    );
-    return;
-  }
-
-  let stats;
-  try {
-    stats = await fs.stat(realPath);
-  } catch (error) {
-    await safeSendToChannel(tracker.channel, `Attachment unreadable: \`${path.basename(realPath)}\``);
-    return;
-  }
-
-  if (stats.size > attachmentMaxBytes) {
-    await safeSendToChannel(
-      tracker.channel,
-      `Attachment too large (${formatBytes(stats.size)} > ${formatBytes(attachmentMaxBytes)}): \`${path.basename(realPath)}\``
-    );
-    return;
-  }
-
-  const key = itemId ? `${itemId}:${realPath}` : realPath;
-  if (tracker.sentAttachmentKeys?.has(key)) {
-    return;
-  }
-  tracker.sentAttachmentKeys?.add(key);
-
-  const label = itemType ? statusLabelForItemType(itemType) : "attachment";
-  const content = `Attachment (${label}): \`${path.basename(realPath)}\``;
-  await safeSendToChannelPayload(tracker.channel, {
-    content,
-    files: [{ attachment: realPath, name: path.basename(realPath) }]
+  await maybeSendAttachmentsForItemFromService(tracker, item, {
+    attachmentsEnabled,
+    attachmentItemTypes,
+    attachmentMaxBytes,
+    attachmentRoots,
+    imageCacheDir,
+    statusLabelForItemType,
+    safeSendToChannel,
+    safeSendToChannelPayload,
+    truncateStatusText
   });
 }
 
-function resolveAttachmentRoots(tracker) {
-  const roots = new Set();
-  if (typeof tracker?.cwd === "string" && tracker.cwd) {
-    roots.add(path.resolve(tracker.cwd));
-  }
-  if (imageCacheDir) {
-    roots.add(path.resolve(imageCacheDir));
-  }
-  for (const root of attachmentRoots) {
-    if (root) {
-      roots.add(path.resolve(root));
-    }
-  }
-  if (process.platform !== "win32") {
-    roots.add(path.resolve("/tmp"));
-  }
-  return [...roots];
-}
-
-function isPathWithinRoots(targetPath, roots) {
-  if (typeof targetPath !== "string" || !targetPath) {
-    return false;
-  }
-  for (const root of roots) {
-    if (typeof root !== "string" || !root) {
-      continue;
-    }
-    const relative = path.relative(root, targetPath);
-    if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes)) {
-    return "0 B";
-  }
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function splitForDiscord(text, limit = 1900) {
-  if (text.length <= limit) {
-    return [text];
-  }
-  const chunks = [];
-  for (let offset = 0; offset < text.length; offset += limit) {
-    chunks.push(text.slice(offset, offset + limit));
-  }
-  return chunks;
-}
-
 async function sendChunkedToChannel(channel, text) {
-  const chunks = splitForDiscord(text);
-  for (const chunk of chunks) {
-    await safeSendToChannel(channel, chunk);
-  }
+  await sendChunkedToChannelFromRenderer(channel, text, safeSendToChannel, discordMaxMessageLength);
 }
 
 function extractThreadId(params) {
@@ -2947,152 +2397,4 @@ function extractAgentMessageText(item) {
     return textParts.join("");
   }
   return "";
-}
-
-async function loadConfig(filePath) {
-  let parsed = {};
-  try {
-    const raw = await fs.readFile(filePath, "utf8");
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    if (error?.code !== "ENOENT") {
-      throw error;
-    }
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    parsed = {};
-  }
-
-  const normalizedChannels = {};
-  const rawChannels =
-    parsed && typeof parsed === "object" && parsed.channels && typeof parsed.channels === "object"
-      ? parsed.channels
-      : {};
-
-  for (const [channelId, value] of Object.entries(rawChannels)) {
-    if (typeof value === "string") {
-      normalizedChannels[channelId] = { cwd: path.resolve(value) };
-      continue;
-    }
-    if (typeof value === "object" && typeof value.cwd === "string") {
-      normalizedChannels[channelId] = {
-        cwd: path.resolve(value.cwd),
-        model: typeof value.model === "string" ? value.model : undefined
-      };
-      continue;
-    }
-    throw new Error(`Mapping ${channelId} must map to a cwd string or { cwd, model? } object`);
-  }
-
-  let allowedUserIds = Array.isArray(parsed.allowedUserIds)
-    ? parsed.allowedUserIds.filter((value) => typeof value === "string")
-    : [];
-
-  const placeholderIds = new Set(["123456789012345678"]);
-  const hadPlaceholder = allowedUserIds.some((id) => placeholderIds.has(id));
-  allowedUserIds = allowedUserIds.filter((id) => !placeholderIds.has(id));
-
-  const envAllowedRaw = process.env.DISCORD_ALLOWED_USER_IDS;
-  if (envAllowedRaw !== undefined) {
-    const fromEnv = envAllowedRaw
-      .split(",")
-      .map((value) => value.trim())
-      .filter((value) => value.length > 0);
-    if (fromEnv.length === 0) {
-      throw new Error(
-        "DISCORD_ALLOWED_USER_IDS is set but empty. Provide one or more user IDs (comma-separated)."
-      );
-    }
-    allowedUserIds = fromEnv;
-  } else if (hadPlaceholder && allowedUserIds.length === 0) {
-    console.warn(
-      "channels.json has placeholder allowedUserIds. Access control is disabled until you set real user IDs."
-    );
-  }
-
-  const envApprovalPolicy = process.env.CODEX_APPROVAL_POLICY;
-  const rawApprovalPolicy = typeof envApprovalPolicy === "string" ? envApprovalPolicy : parsed.approvalPolicy;
-  const parsedApprovalPolicy = normalizeApprovalPolicy(rawApprovalPolicy);
-  if (rawApprovalPolicy !== undefined && rawApprovalPolicy !== null && parsedApprovalPolicy === null) {
-    throw new Error(
-      `Invalid approval policy '${rawApprovalPolicy}'. Use one of: untrusted, on-failure, on-request, never.`
-    );
-  }
-  const approvalPolicy = parsedApprovalPolicy ?? "never";
-
-  const envSandboxMode = process.env.CODEX_SANDBOX_MODE;
-  const rawSandboxMode = typeof envSandboxMode === "string" ? envSandboxMode : parsed.sandboxMode;
-  const parsedSandboxMode = normalizeSandboxMode(rawSandboxMode);
-  if (rawSandboxMode !== undefined && rawSandboxMode !== null && parsedSandboxMode === null) {
-    throw new Error(
-      `Invalid sandbox mode '${rawSandboxMode}'. Use one of: read-only, workspace-write, danger-full-access.`
-    );
-  }
-  const sandboxMode = parsedSandboxMode ?? "workspace-write";
-
-  return {
-    channels: normalizedChannels,
-    defaultModel:
-      typeof parsed.defaultModel === "string" && parsed.defaultModel.trim().length > 0
-        ? parsed.defaultModel.trim()
-        : defaultModel,
-    defaultEffort: normalizeEffort(parsed.defaultEffort) ?? defaultEffort,
-    approvalPolicy,
-    sandboxMode,
-    allowedUserIds,
-    autoDiscoverProjects: parsed.autoDiscoverProjects !== false
-  };
-}
-
-function normalizeEffort(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const normalized = value.trim();
-  const allowed = new Set(["low", "medium", "high"]);
-  return allowed.has(normalized) ? normalized : null;
-}
-
-function normalizeApprovalPolicy(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const normalized = value.trim();
-  const allowed = new Set(["untrusted", "on-failure", "on-request", "never"]);
-  return allowed.has(normalized) ? normalized : null;
-}
-
-function normalizeSandboxMode(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const normalized = value.trim();
-  const allowed = new Set(["read-only", "workspace-write", "danger-full-access"]);
-  return allowed.has(normalized) ? normalized : null;
-}
-
-function parseAttachmentItemTypes(raw) {
-  const fallback = ["imageView"];
-  if (raw === undefined || raw === null) {
-    return new Set(fallback);
-  }
-  const normalized = String(raw)
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-  if (normalized.length === 0) {
-    return new Set(fallback);
-  }
-  return new Set(normalized);
-}
-
-function parsePathListEnv(raw) {
-  if (typeof raw !== "string" || !raw.trim()) {
-    return [];
-  }
-  return raw
-    .split(":")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0)
-    .map((entry) => path.resolve(entry));
 }
