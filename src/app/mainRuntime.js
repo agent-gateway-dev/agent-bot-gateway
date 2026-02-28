@@ -1,9 +1,9 @@
-import process from "node:process";
 import { ChannelType, MessageFlags } from "discord.js";
 import { buildBridgeRuntimes } from "./buildRuntimes.js";
 import { initializeRuntimeContext } from "./bootstrapContext.js";
 import { createRuntimeOps } from "./runtimeOps.js";
 import { isDiscordMissingPermissionsError, waitForDiscordReady } from "./runtimeUtils.js";
+import { registerShutdownSignals } from "./signalHandlers.js";
 import { createShutdownHandler } from "./shutdown.js";
 import { startBridgeRuntime } from "./startup.js";
 import { wireBridgeListeners } from "./wireListeners.js";
@@ -149,10 +149,5 @@ export async function startMainRuntime() {
     startHeartbeatLoop: runtimeAdapters.startHeartbeatLoop
   });
 
-  process.on("SIGINT", () => {
-    void refs.shutdown?.(0);
-  });
-  process.on("SIGTERM", () => {
-    void refs.shutdown?.(0);
-  });
+  registerShutdownSignals(refs.shutdown);
 }
