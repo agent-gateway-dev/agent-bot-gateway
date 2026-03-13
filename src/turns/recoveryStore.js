@@ -58,7 +58,7 @@ export function createTurnRecoveryStore(deps) {
   }
 
   async function reconcilePending(options) {
-    const { discord, codex, safeSendToChannel } = options;
+    const { fetchChannelByRouteId, codex, safeSendToChannel } = options;
     const turns = Object.values(store.turns);
     if (turns.length === 0) {
       return { reconciled: 0, resumedKnown: 0, missingThread: 0, skipped: 0 };
@@ -70,7 +70,7 @@ export function createTurnRecoveryStore(deps) {
     let skipped = 0;
 
     for (const turn of turns) {
-      const channel = await discord.channels.fetch(turn.channelId).catch(() => null);
+      const channel = await fetchChannelByRouteId(turn.channelId).catch(() => null);
       if (!channel || !channel.isTextBased()) {
         skipped += 1;
         await removeTurn(turn.threadId);

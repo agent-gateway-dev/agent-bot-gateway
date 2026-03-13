@@ -1,7 +1,12 @@
 import { buildCommandRuntime } from "./buildCommandRuntime.js";
+import { buildBackendRuntime } from "./buildBackendRuntime.js";
 import { buildNotificationRuntime } from "./buildNotificationRuntime.js";
 import { buildApprovalRuntime } from "./buildApprovalRuntime.js";
 import { buildDiscordRuntime } from "./buildDiscordRuntime.js";
+import { buildFeishuRuntime } from "./buildFeishuRuntime.js";
+import { createPlatformRegistry } from "../platforms/platformRegistry.js";
+import { createDiscordPlatform } from "../platforms/discordPlatform.js";
+import { createFeishuPlatform } from "../platforms/feishuPlatform.js";
 
 export function buildBridgeRuntimes(deps) {
   const {
@@ -12,6 +17,8 @@ export function buildBridgeRuntimes(deps) {
     execFileAsync,
     discord,
     codex,
+    fetchChannelByRouteId,
+    processStartedAt,
     config,
     state,
     activeTurns,
@@ -26,6 +33,9 @@ export function buildBridgeRuntimes(deps) {
     statePath,
     configPath,
     renderVerbosity,
+    backendHttpEnabled,
+    backendHttpHost,
+    backendHttpPort,
     generalChannelId,
     generalChannelName,
     generalChannelCwd,
@@ -41,7 +51,18 @@ export function buildBridgeRuntimes(deps) {
     sendChunkedToChannel
   } = deps;
 
-  const { bootstrapChannelMappings, handleCommand, handleInitRepoCommand } = buildCommandRuntime({
+  let platformRegistry = null;
+  const getPlatformRegistry = () => platformRegistry;
+
+  const {
+    bootstrapChannelMappings,
+    getHelpText,
+    isCommandSupportedForPlatform,
+    runManagedRouteCommand,
+    handleCommand,
+    handleInitRepoCommand,
+    handleSetPathCommand
+  } = buildCommandRuntime({
     ChannelType,
     path,
     fs,
@@ -64,6 +85,7 @@ export function buildBridgeRuntimes(deps) {
     setChannelSetups,
     runtimeAdapters,
     safeReply,
+    getPlatformRegistry
   });
 
   const notificationRuntime = buildNotificationRuntime({
@@ -78,13 +100,13 @@ export function buildBridgeRuntimes(deps) {
 
   const serverRequestRuntime = buildApprovalRuntime({
     codex,
-    discord,
     state,
     activeTurns,
     pendingApprovals,
     approvalButtonPrefix,
     safeSendToChannel,
-    createApprovalToken
+    createApprovalToken,
+    fetchChannelByRouteId
   });
 
   const discordRuntime = buildDiscordRuntime({
@@ -96,16 +118,74 @@ export function buildBridgeRuntimes(deps) {
     generalChannelCwd,
     getChannelSetups,
     bootstrapChannelMappings,
+    runManagedRouteCommand,
     runtimeAdapters,
+    getHelpText,
+    isCommandSupportedForPlatform,
     handleCommand,
     handleInitRepoCommand,
+    handleSetPathCommand,
     approvalButtonPrefix,
     pendingApprovals,
     safeReply,
   });
 
+  const feishuRuntime = buildFeishuRuntime({
+    config,
+    runtimeEnv: {
+      feishuEnabled: deps.feishuEnabled,
+      feishuAppId: deps.feishuAppId,
+      feishuAppSecret: deps.feishuAppSecret,
+      feishuVerificationToken: deps.feishuVerificationToken,
+      feishuTransport: deps.feishuTransport,
+      feishuPort: deps.feishuPort,
+      feishuHost: deps.feishuHost,
+      feishuWebhookPath: deps.feishuWebhookPath,
+      feishuGeneralChatId: deps.feishuGeneralChatId,
+      feishuGeneralCwd: deps.feishuGeneralCwd,
+      feishuRequireMentionInGroup: deps.feishuRequireMentionInGroup
+    },
+    getChannelSetups,
+    bootstrapChannelMappings,
+    runManagedRouteCommand,
+    getHelpText,
+    isCommandSupportedForPlatform,
+    handleCommand,
+    handleSetPathCommand,
+    runtimeAdapters,
+    safeReply
+  });
+
+  platformRegistry = createPlatformRegistry([
+    createDiscordPlatform({
+      discord,
+      discordToken: deps.discordToken,
+      waitForDiscordReady: deps.waitForDiscordReady,
+      runtime: discordRuntime,
+      bootstrapChannelMappings
+    }),
+    createFeishuPlatform({
+      runtime: feishuRuntime
+    })
+  ]);
+
+  const backendRuntime = buildBackendRuntime({
+    enabled: backendHttpEnabled,
+    host: backendHttpHost,
+    port: backendHttpPort,
+    processStartedAt,
+    activeTurns,
+    pendingApprovals,
+    getMappedChannelCount: () => Object.keys(getChannelSetups()).length,
+    platformRegistry
+  });
+
   return {
     bootstrapChannelMappings,
+    registerSlashCommands: discordRuntime.registerSlashCommands,
+    backendRuntime,
+    platformRegistry,
+    feishuRuntime,
     notificationRuntime,
     serverRequestRuntime,
     discordRuntime

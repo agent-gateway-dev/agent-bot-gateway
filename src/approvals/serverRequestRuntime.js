@@ -7,6 +7,7 @@ export function createServerRequestRuntime(deps) {
     pendingApprovals,
     approvalButtonPrefix,
     isGeneralChannel,
+    fetchChannelByRouteId,
     extractThreadId,
     describeToolRequestUserInput,
     buildApprovalActionRows,
@@ -16,6 +17,10 @@ export function createServerRequestRuntime(deps) {
     safeSendToChannel,
     createApprovalToken
   } = deps;
+  const fetchRouteChannel =
+    typeof fetchChannelByRouteId === "function"
+      ? fetchChannelByRouteId
+      : async (routeId) => await discord?.channels?.fetch?.(routeId).catch(() => null);
 
   const buildFallbackResponseForServerRequest = (method, params) =>
     buildResponseForServerRequest(method, params, "decline");
@@ -55,7 +60,7 @@ export function createServerRequestRuntime(deps) {
       const threadId = extractThreadId(params);
       const repoChannelId = threadId ? findRepoChannelIdByCodexThreadId(threadId) : null;
       if (repoChannelId) {
-        const channel = await discord.channels.fetch(repoChannelId).catch(() => null);
+        const channel = await fetchRouteChannel(repoChannelId).catch(() => null);
         if (channel && channel.isTextBased()) {
           const toolName = typeof params?.tool === "string" ? params.tool : "unknown-tool";
           await safeSendToChannel(
@@ -82,12 +87,15 @@ export function createServerRequestRuntime(deps) {
       return;
     }
 
-    const channel = await discord.channels.fetch(repoChannelId).catch(() => null);
+    const channel = await fetchRouteChannel(repoChannelId).catch(() => null);
     if (!channel || !channel.isTextBased()) {
       codex.respond(id, buildFallbackResponseForServerRequest(resolvedMethod, params));
       return;
     }
-    if (resolvedMethod === "item/fileChange/requestApproval" && isGeneralChannel(channel)) {
+    if (
+      resolvedMethod === "item/fileChange/requestApproval" &&
+      (channel?.bridgeMeta?.allowFileWrites === false || isGeneralChannel(channel))
+    ) {
       await safeSendToChannel(channel, "Declined file change in #general (read-only mode).");
       codex.respond(id, buildResponseForServerRequest(resolvedMethod, params, "decline"));
       return;
@@ -189,7 +197,7 @@ export function createServerRequestRuntime(deps) {
     if (!approval?.approvalMessageId) {
       return;
     }
-    const channel = await discord.channels.fetch(approval.repoChannelId).catch(() => null);
+    const channel = await fetchRouteChannel(approval.repoChannelId).catch(() => null);
     if (!channel || !channel.isTextBased()) {
       return;
     }

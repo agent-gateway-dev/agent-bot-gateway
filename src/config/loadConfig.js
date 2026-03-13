@@ -43,6 +43,9 @@ export async function loadConfig(filePath, options = {}) {
   let allowedUserIds = Array.isArray(parsed.allowedUserIds)
     ? parsed.allowedUserIds.filter((value) => typeof value === "string")
     : [];
+  let allowedFeishuUserIds = Array.isArray(parsed.allowedFeishuUserIds)
+    ? parsed.allowedFeishuUserIds.filter((value) => typeof value === "string")
+    : [];
 
   const placeholderIds = new Set(["123456789012345678"]);
   const hadPlaceholder = allowedUserIds.some((id) => placeholderIds.has(id));
@@ -65,6 +68,20 @@ export async function loadConfig(filePath, options = {}) {
   }
 
   const envApprovalPolicy = process.env.CODEX_APPROVAL_POLICY;
+  const envFeishuAllowedRaw = process.env.FEISHU_ALLOWED_OPEN_IDS;
+  if (envFeishuAllowedRaw !== undefined) {
+    const fromEnv = envFeishuAllowedRaw
+      .split(",")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+    if (fromEnv.length === 0) {
+      throw new Error(
+        "FEISHU_ALLOWED_OPEN_IDS is set but empty. Provide one or more open IDs (comma-separated)."
+      );
+    }
+    allowedFeishuUserIds = fromEnv;
+  }
+
   const rawApprovalPolicy = typeof envApprovalPolicy === "string" ? envApprovalPolicy : parsed.approvalPolicy;
   const parsedApprovalPolicy = normalizeApprovalPolicy(rawApprovalPolicy);
   if (rawApprovalPolicy !== undefined && rawApprovalPolicy !== null && parsedApprovalPolicy === null) {
@@ -94,6 +111,7 @@ export async function loadConfig(filePath, options = {}) {
     approvalPolicy,
     sandboxMode,
     allowedUserIds,
+    allowedFeishuUserIds,
     autoDiscoverProjects: parsed.autoDiscoverProjects !== false
   };
 }

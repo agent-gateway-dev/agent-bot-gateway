@@ -11,9 +11,14 @@ export async function runDoctorCommand(_args: string[], context: CliContext): Pr
   const warnings: string[] = [];
 
   const hasDiscordToken = Boolean(process.env.DISCORD_BOT_TOKEN && process.env.DISCORD_BOT_TOKEN.trim());
+  const hasFeishuAppId = Boolean(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_ID.trim());
+  const hasFeishuAppSecret = Boolean(process.env.FEISHU_APP_SECRET && process.env.FEISHU_APP_SECRET.trim());
+  const hasFeishuCredentials = hasFeishuAppId && hasFeishuAppSecret;
   checks.push({ name: "DISCORD_BOT_TOKEN", ok: hasDiscordToken });
-  if (!hasDiscordToken) {
-    failures.push("Missing DISCORD_BOT_TOKEN");
+  checks.push({ name: "FEISHU_APP_ID", ok: hasFeishuAppId });
+  checks.push({ name: "FEISHU_APP_SECRET", ok: hasFeishuAppSecret });
+  if (!hasDiscordToken && !hasFeishuCredentials) {
+    failures.push("Missing chat platform credentials: set DISCORD_BOT_TOKEN or FEISHU_APP_ID + FEISHU_APP_SECRET");
   }
 
   const codexBin = process.env.CODEX_BIN ?? "codex";

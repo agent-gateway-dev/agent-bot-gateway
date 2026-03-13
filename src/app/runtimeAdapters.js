@@ -5,8 +5,8 @@ export function createRuntimeAdapters(deps) {
     getNotificationRuntime,
     getServerRequestRuntime,
     getDiscordRuntime,
+    getPlatformRegistry,
     getRuntimeOps,
-    getDiscord,
     maybeSendAttachmentsForItemFromService,
     maybeSendInferredAttachmentsFromTextFromService,
     sendChunkedToChannelFromRenderer,
@@ -27,7 +27,7 @@ export function createRuntimeAdapters(deps) {
   }
 
   async function maybeCompletePendingRestartNotice() {
-    await getRuntimeOps()?.maybeCompletePendingRestartNotice(getDiscord());
+    await getRuntimeOps()?.maybeCompletePendingRestartNotice();
   }
 
   function shouldHandleAsSelfRestartRequest(content) {
@@ -35,11 +35,21 @@ export function createRuntimeAdapters(deps) {
   }
 
   async function handleMessage(message) {
-    await getDiscordRuntime()?.handleMessage(message);
+    const platformRegistry = typeof getPlatformRegistry === "function" ? getPlatformRegistry() : null;
+    if (platformRegistry?.handleInboundMessage) {
+      await platformRegistry.handleInboundMessage(message);
+      return;
+    }
+    await getDiscordRuntime?.()?.handleMessage(message);
   }
 
   async function handleInteraction(interaction) {
-    await getDiscordRuntime()?.handleInteraction(interaction);
+    const platformRegistry = typeof getPlatformRegistry === "function" ? getPlatformRegistry() : null;
+    if (platformRegistry?.handleInboundInteraction) {
+      await platformRegistry.handleInboundInteraction(interaction);
+      return;
+    }
+    await getDiscordRuntime?.()?.handleInteraction(interaction);
   }
 
   function collectImageAttachments(message) {

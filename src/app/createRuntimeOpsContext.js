@@ -11,6 +11,7 @@ export function createRuntimeOpsContext(params) {
     processStartedAt,
     safeReply,
     safeSendToChannel,
+    fetchChannelByRouteId,
     refs,
     runtimeEnv
   } = params;
@@ -32,6 +33,7 @@ export function createRuntimeOpsContext(params) {
     exitOnRestartAck,
     safeReply,
     safeSendToChannel,
+    fetchChannelByRouteId,
     truncateStatusText,
     shutdown: (...args) => refs.shutdown?.(...args)
   });

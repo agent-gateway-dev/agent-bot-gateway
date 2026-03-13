@@ -52,3 +52,43 @@ export function createDebugLog(debugLoggingEnabled) {
     console.log(`[debug:${scope}] ${message} ${trimmed}`);
   };
 }
+
+export function isBenignCodexStderrLine(line) {
+  const normalized = stripAnsi(String(line ?? "")).toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.includes("codex_core::rollout::recorder") && normalized.includes("falling back on rollout system")
+  ) || (
+    normalized.includes("codex_core::state_db") &&
+    normalized.includes("list_threads_with_db_fallback") &&
+    normalized.includes("falling_back")
+  );
+}
+
+function stripAnsi(text) {
+  const input = String(text ?? "");
+  let output = "";
+  let index = 0;
+  while (index < input.length) {
+    if (input.charCodeAt(index) !== 27) {
+      output += input[index];
+      index += 1;
+      continue;
+    }
+
+    index += 1;
+    if (input[index] === "[") {
+      index += 1;
+      while (index < input.length && input[index] !== "m") {
+        index += 1;
+      }
+      if (input[index] === "m") {
+        index += 1;
+      }
+      continue;
+    }
+  }
+  return output;
+}

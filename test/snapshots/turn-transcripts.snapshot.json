@@ -34,12 +34,12 @@
       }
     ],
     "renderPlanUser": {
-      "primaryMessage": "Done. Preview and logs at run.log",
+      "primaryMessage": "Done. Preview ![img](/tmp/build/final.png) and logs at /tmp/build/run.log",
       "statusMessages": [],
       "attachments": []
     },
     "renderPlanOps": {
-      "primaryMessage": "Done. Preview and logs at run.log",
+      "primaryMessage": "Done. Preview ![img](/tmp/build/final.png) and logs at /tmp/build/run.log",
       "statusMessages": [
         "```diff\n+ one line changed\n```"
       ],
@@ -54,7 +54,7 @@
       "errorMessage": "Sandbox denied write access."
     },
     "renderPlan": {
-      "primaryMessage": "Failed while updating index.ts",
+      "primaryMessage": "Failed while updating /Users/dev/work/repo/src/index.ts",
       "statusMessages": [
         "stderr: Permission denied"
       ],

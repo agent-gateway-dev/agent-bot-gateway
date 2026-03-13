@@ -59,6 +59,66 @@ describe("cli service commands", () => {
     expect(calls.length).toBe(3);
   });
 
+  test("start tolerates launchctl bootstrap I/O error when service is already loaded", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-service-start-"));
+    tempDirs.push(cwd);
+    const calls: string[][] = [];
+    let invocation = 0;
+
+    const result = await runStartCommand([], { cwd, now: new Date() }, async (args) => {
+      calls.push(args);
+      invocation += 1;
+      if (invocation === 1) {
+        return { code: 5, stdout: "", stderr: "Bootstrap failed: 5: Input/output error" };
+      }
+      if (invocation === 2) {
+        return { code: 0, stdout: "service loaded", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual([
+      ["bootstrap", `gui/${typeof process.getuid === "function" ? process.getuid() : 0}`, path.join(cwd, "com.codex.discord.bridge.plist")],
+      ["print", `gui/${typeof process.getuid === "function" ? process.getuid() : 0}/com.codex.discord.bridge`],
+      ["enable", `gui/${typeof process.getuid === "function" ? process.getuid() : 0}/com.codex.discord.bridge`],
+      ["kickstart", "-k", `gui/${typeof process.getuid === "function" ? process.getuid() : 0}/com.codex.discord.bridge`]
+    ]);
+  });
+
+  test("start tolerates kickstart failure when the service is already loaded", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-service-start-"));
+    tempDirs.push(cwd);
+    await fs.writeFile(
+      path.join(cwd, "com.codex.discord.bridge.plist"),
+      "<plist><dict><key>Label</key><string>com.codex.discord.bridge</string></dict></plist>",
+      "utf8"
+    );
+    const calls: string[][] = [];
+    let invocation = 0;
+
+    const result = await runStartCommand([], { cwd, now: new Date() }, async (args) => {
+      calls.push(args);
+      invocation += 1;
+      if (invocation === 3) {
+        return { code: 37, stdout: "", stderr: "" };
+      }
+      if (invocation === 4) {
+        return { code: 0, stdout: "service loaded", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    const domain = `gui/${typeof process.getuid === "function" ? process.getuid() : 0}`;
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual([
+      ["bootstrap", domain, path.join(cwd, "com.codex.discord.bridge.plist")],
+      ["enable", `${domain}/com.codex.discord.bridge`],
+      ["kickstart", "-k", `${domain}/com.codex.discord.bridge`],
+      ["print", `${domain}/com.codex.discord.bridge`]
+    ]);
+  });
+
   test("stop command accepts already-stopped state", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-service-stop-"));
     tempDirs.push(cwd);

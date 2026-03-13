@@ -4,7 +4,12 @@ import path from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/config/loadConfig.js";
 
-const ENV_KEYS = ["DISCORD_ALLOWED_USER_IDS", "CODEX_APPROVAL_POLICY", "CODEX_SANDBOX_MODE"] as const;
+const ENV_KEYS = [
+  "DISCORD_ALLOWED_USER_IDS",
+  "FEISHU_ALLOWED_OPEN_IDS",
+  "CODEX_APPROVAL_POLICY",
+  "CODEX_SANDBOX_MODE"
+] as const;
 const ORIGINAL_ENV = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
 
 function writeJsonTempFile(payload: unknown): string {
@@ -76,6 +81,15 @@ describe("loadConfig", () => {
     });
     const config = await loadConfig(configPath);
     expect(config.allowedUserIds).toEqual(["a", "b", "c"]);
+  });
+
+  test("uses env FEISHU_ALLOWED_OPEN_IDS when set", async () => {
+    process.env.FEISHU_ALLOWED_OPEN_IDS = "ou_a,ou_b";
+    const configPath = writeJsonTempFile({
+      allowedFeishuUserIds: ["from-config"]
+    });
+    const config = await loadConfig(configPath);
+    expect(config.allowedFeishuUserIds).toEqual(["ou_a", "ou_b"]);
   });
 
   test("rejects empty DISCORD_ALLOWED_USER_IDS", async () => {

@@ -1,3 +1,5 @@
+import { isBenignCodexStderrLine } from "./runtimeUtils.js";
+
 export function wireBridgeListeners({
   codex,
   discord,
@@ -7,6 +9,9 @@ export function wireBridgeListeners({
   handleInteraction
 }) {
   codex.on("stderr", (line) => {
+    if (isBenignCodexStderrLine(line)) {
+      return;
+    }
     console.error(`[codex] ${line}`);
   });
   codex.on("notification", (event) => {

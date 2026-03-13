@@ -1,4 +1,5 @@
 import { resolveRepoContext } from "../channels/context.js";
+import { buildCommandTextFromInteraction, syncSlashCommands } from "../commands/slashCommands.js";
 import { parseApprovalButtonCustomId } from "../codex/approvalPayloads.js";
 import { createDiscordRuntime } from "./discordRuntime.js";
 
@@ -11,10 +12,13 @@ export function buildDiscordRuntime(deps) {
     generalChannelName,
     generalChannelCwd,
     getChannelSetups,
-    bootstrapChannelMappings,
+    runManagedRouteCommand,
     runtimeAdapters,
+    getHelpText,
+    isCommandSupportedForPlatform,
     handleCommand,
     handleInitRepoCommand,
+    handleSetPathCommand,
     approvalButtonPrefix,
     pendingApprovals,
     safeReply
@@ -28,14 +32,19 @@ export function buildDiscordRuntime(deps) {
     generalChannelName,
     generalChannelCwd,
     getChannelSetups,
-    bootstrapChannelMappings,
+    runManagedRouteCommand,
     shouldHandleAsSelfRestartRequest: runtimeAdapters.shouldHandleAsSelfRestartRequest,
     requestSelfRestartFromDiscord: runtimeAdapters.requestSelfRestartFromDiscord,
     collectImageAttachments: runtimeAdapters.collectImageAttachments,
     buildTurnInputFromMessage: runtimeAdapters.buildTurnInputFromMessage,
     enqueuePrompt: runtimeAdapters.enqueuePrompt,
+    getHelpText,
+    isCommandSupportedForPlatform,
     handleCommand,
     handleInitRepoCommand,
+    handleSetPathCommand,
+    buildCommandTextFromInteraction,
+    registerSlashCommands: async () => await syncSlashCommands({ discord }),
     parseApprovalButtonCustomId,
     approvalButtonPrefix,
     pendingApprovals,

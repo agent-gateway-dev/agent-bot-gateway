@@ -27,7 +27,8 @@ export async function runStartCommand(
 
   const service = resolveLaunchdServiceInfo(context.cwd);
   const bootstrap = await runner(["bootstrap", service.domain, service.plistPath]);
-  if (bootstrap.code !== 0 && !isAlreadyLoaded(bootstrap.stderr)) {
+  const alreadyLoaded = bootstrap.code !== 0 && (isAlreadyLoaded(bootstrap.stderr) || (await isLoadedService(service, runner)));
+  if (bootstrap.code !== 0 && !alreadyLoaded) {
     return failure("failed to bootstrap launchd service", service, bootstrap);
   }
 
@@ -37,7 +38,8 @@ export async function runStartCommand(
   }
 
   const kickstart = await runner(["kickstart", "-k", service.serviceTarget]);
-  if (kickstart.code !== 0) {
+  const kickstartRecovered = kickstart.code !== 0 && (await isLoadedService(service, runner));
+  if (kickstart.code !== 0 && !kickstartRecovered) {
     return failure("failed to start launchd service", service, kickstart);
   }
 
@@ -49,6 +51,14 @@ export async function runStartCommand(
       plistPath: service.plistPath
     }
   };
+}
+
+async function isLoadedService(
+  service: ReturnType<typeof resolveLaunchdServiceInfo>,
+  runner: LaunchctlRunner
+): Promise<boolean> {
+  const result = await runner(["print", service.serviceTarget]);
+  return result.code === 0;
 }
 
 export async function runStopCommand(

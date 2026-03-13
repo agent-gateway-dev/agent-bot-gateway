@@ -4,6 +4,8 @@ import process from "node:process";
 import { parseAttachmentItemTypes } from "./loadConfig.js";
 import { normalizeRenderVerbosity } from "../render/messageRenderer.js";
 import { parsePathListEnv } from "../utils/pathEnv.js";
+import { makeFeishuRouteId } from "../feishu/ids.js";
+import { normalizeFeishuTransport } from "../feishu/transport.js";
 
 export function loadRuntimeEnv() {
   const configPath = path.resolve(process.env.CHANNEL_CONFIG_PATH ?? "config/channels.json");
@@ -59,6 +61,25 @@ export function loadRuntimeEnv() {
     process.env.DISCORD_LEGACY_CATEGORY_NAME ??
     "codex-projects";
   const extraWritableRoots = parsePathListEnv(process.env.CODEX_EXTRA_WRITABLE_ROOTS);
+  const feishuAppId = String(process.env.FEISHU_APP_ID ?? "").trim();
+  const feishuAppSecret = String(process.env.FEISHU_APP_SECRET ?? "").trim();
+  const feishuVerificationToken = String(process.env.FEISHU_VERIFICATION_TOKEN ?? "").trim();
+  const feishuTransport = normalizeFeishuTransport(process.env.FEISHU_TRANSPORT);
+  const feishuEnabled = Boolean(feishuAppId && feishuAppSecret);
+  const backendHttpEnabled = process.env.BACKEND_HTTP_ENABLED === "1" || feishuEnabled;
+  const backendHttpHost = String(process.env.BACKEND_HTTP_HOST ?? process.env.FEISHU_HOST ?? "0.0.0.0").trim() || "0.0.0.0";
+  const configuredBackendPort = Number(process.env.BACKEND_HTTP_PORT ?? process.env.FEISHU_PORT ?? "");
+  const backendHttpPort =
+    Number.isFinite(configuredBackendPort) && configuredBackendPort > 0 ? Math.floor(configuredBackendPort) : 8788;
+  const configuredFeishuPort = Number(process.env.FEISHU_PORT ?? "");
+  const feishuPort = Number.isFinite(configuredFeishuPort) && configuredFeishuPort > 0 ? Math.floor(configuredFeishuPort) : 8788;
+  const feishuHost = String(process.env.FEISHU_HOST ?? "0.0.0.0").trim() || "0.0.0.0";
+  const feishuWebhookPath = String(process.env.FEISHU_WEBHOOK_PATH ?? "/feishu/events").trim() || "/feishu/events";
+  const feishuGeneralChatId = String(process.env.FEISHU_GENERAL_CHAT_ID ?? "").trim();
+  const feishuGeneralDefaultCwd = path.join(os.tmpdir(), "codex-discord-bridge", "feishu-general");
+  const feishuGeneralCwd = path.resolve(process.env.FEISHU_GENERAL_CWD ?? feishuGeneralDefaultCwd);
+  const feishuGeneralRouteId = feishuGeneralChatId ? makeFeishuRouteId(feishuGeneralChatId) : "";
+  const feishuRequireMentionInGroup = process.env.FEISHU_REQUIRE_MENTION_IN_GROUP !== "0";
 
   return {
     configPath,
@@ -90,6 +111,21 @@ export function loadRuntimeEnv() {
     heartbeatIntervalMs,
     debugLoggingEnabled,
     projectsCategoryName,
-    extraWritableRoots
+    extraWritableRoots,
+    backendHttpEnabled,
+    backendHttpHost,
+    backendHttpPort,
+    feishuEnabled,
+    feishuAppId,
+    feishuAppSecret,
+    feishuVerificationToken,
+    feishuTransport,
+    feishuPort,
+    feishuHost,
+    feishuWebhookPath,
+    feishuGeneralChatId,
+    feishuGeneralRouteId,
+    feishuGeneralCwd,
+    feishuRequireMentionInGroup
   };
 }

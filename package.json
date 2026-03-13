@@ -3,16 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Discord bridge for Codex app-server",
+  "description": "Discord and Feishu bridge for Codex app-server",
   "packageManager": "bun@1.2.5",
   "bin": {
     "dc-bridge": "bin/dc-bridge"
   },
   "scripts": {
     "start": "bun run src/index.js",
+    "start:backend": "node scripts/start-with-proxy.mjs",
+    "start:proxy": "node scripts/start-with-proxy.mjs",
     "start:ts": "bun run src/app/main.ts",
     "cli": "bun run src/cli/index.ts",
-    "lint": "eslint \"src/{app,attachments,channels,cli,codex,config,render,types}/**/*.{js,ts}\" \"test/**/*.ts\"",
+    "lint": "eslint \"src/{app,attachments,channels,cli,codex,config,platforms,render,types}/**/*.{js,ts}\" \"test/**/*.ts\"",
     "test": "bun test",
     "test:stability": "bun test test/turnRunner.restart.integration.test.ts test/turn.recoveryStore.test.ts test/turn.transcripts.snapshot.test.ts test/approvals.serverRequestRuntime.integration.test.ts",
     "typecheck": "tsc --noEmit",
@@ -20,8 +22,11 @@
     "scan:secrets": "bash ./scripts/scan-secrets.sh"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.59.0",
     "discord.js": "^14.20.0",
-    "dotenv": "^16.6.1"
+    "dotenv": "^16.6.1",
+    "https-proxy-agent": "^7.0.6",
+    "undici": "^7.16.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

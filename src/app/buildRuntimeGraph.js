@@ -16,6 +16,7 @@ import { sendChunkedToChannel as sendChunkedToChannelFromRenderer } from "../ren
 import { createTurnRecoveryStore } from "../turns/recoveryStore.js";
 import { statusLabelForItemType, truncateStatusText } from "../turns/turnFormatting.js";
 import { formatInputTextForSetup } from "./runtimeUtils.js";
+import { isFeishuRouteId } from "../feishu/ids.js";
 
 export async function buildRuntimeGraph(deps) {
   const { runtimeEnv, discordToken, execFileAsync, debugLog, discordMaxMessageLength, config, state } = deps;
@@ -39,7 +40,27 @@ export async function buildRuntimeGraph(deps) {
   const codex = new CodexRpcClient({
     codexBin
   });
-  const channelMessaging = createChannelMessaging({ discord });
+  const refs = {
+    runtimeOps: null,
+    discordRuntime: null,
+    backendRuntime: null,
+    feishuRuntime: null,
+    platformRegistry: null,
+    notificationRuntime: null,
+    serverRequestRuntime: null,
+    shutdown: null,
+    turnRunner: null
+  };
+  const fetchChannelByRouteId = async (routeId) => {
+    if (refs.platformRegistry?.fetchChannelByRouteId) {
+      return await refs.platformRegistry.fetchChannelByRouteId(routeId);
+    }
+    if (isFeishuRouteId(routeId)) {
+      return (await refs.feishuRuntime?.fetchChannelByRouteId?.(routeId)) ?? null;
+    }
+    return await discord.channels.fetch(routeId).catch(() => null);
+  };
+  const channelMessaging = createChannelMessaging({ fetchChannelByRouteId });
   const { safeReply, safeSendToChannel, safeSendToChannelPayload } = channelMessaging;
   const sandboxPolicyResolver = createSandboxPolicyResolver({
     path,
@@ -59,14 +80,6 @@ export async function buildRuntimeGraph(deps) {
   const activeTurns = new Map();
   const pendingApprovals = new Map();
   const processStartedAt = new Date().toISOString();
-  const refs = {
-    runtimeOps: null,
-    discordRuntime: null,
-    notificationRuntime: null,
-    serverRequestRuntime: null,
-    shutdown: null,
-    turnRunner: null
-  };
   let nextApprovalToken = 1;
   const createApprovalToken = () => String(nextApprovalToken++).padStart(4, "0");
   const attachmentInputBuilder = createAttachmentInputBuilder({
@@ -83,9 +96,8 @@ export async function buildRuntimeGraph(deps) {
     getTurnRunner: () => refs.turnRunner,
     getNotificationRuntime: () => refs.notificationRuntime,
     getServerRequestRuntime: () => refs.serverRequestRuntime,
-    getDiscordRuntime: () => refs.discordRuntime,
+    getPlatformRegistry: () => refs.platformRegistry,
     getRuntimeOps: () => refs.runtimeOps,
-    getDiscord: () => discord,
     maybeSendAttachmentsForItemFromService,
     maybeSendInferredAttachmentsFromTextFromService,
     sendChunkedToChannelFromRenderer,
@@ -134,6 +146,7 @@ export async function buildRuntimeGraph(deps) {
     codex,
     safeReply,
     safeSendToChannel,
+    fetchChannelByRouteId,
     activeTurns,
     pendingApprovals,
     processStartedAt,

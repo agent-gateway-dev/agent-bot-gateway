@@ -1,4 +1,3 @@
-import { waitForDiscordReady } from "./runtimeUtils.js";
 import { createShutdownHandler } from "./shutdown.js";
 import { registerShutdownSignals } from "./signalHandlers.js";
 import { startBridgeRuntime } from "./startup.js";
@@ -11,7 +10,6 @@ export async function runBridgeProcess(context) {
     fs,
     path,
     runtimeEnv,
-    discordToken,
     debugLog,
     getChannelSetups,
     setChannelSetups,
@@ -19,6 +17,7 @@ export async function runBridgeProcess(context) {
     codex,
     safeReply,
     safeSendToChannel,
+    fetchChannelByRouteId,
     activeTurns,
     pendingApprovals,
     processStartedAt,
@@ -47,11 +46,12 @@ export async function runBridgeProcess(context) {
     processStartedAt,
     safeReply,
     safeSendToChannel,
+    fetchChannelByRouteId,
     refs,
     runtimeEnv
   });
 
-  const { bootstrapChannelMappings } = attachBuiltRuntimes({
+  const { backendRuntime, platformRegistry } = attachBuiltRuntimes({
     context,
     runtimeEnv,
     getChannelSetups,
@@ -68,19 +68,21 @@ export async function runBridgeProcess(context) {
   refs.shutdown = createShutdownHandler({
     codex,
     discord,
+    stopBackendRuntime: () => backendRuntime?.stop?.(),
+    stopPlatformRuntimes: () => platformRegistry?.stop?.(),
     stopHeartbeatLoop: () => refs.runtimeOps?.stopHeartbeatLoop()
   });
   await startBridgeRuntime({
     codex,
     fs,
     generalChannelCwd,
-    discord,
-    discordToken,
-    waitForDiscordReady,
+    platformRegistry,
     maybeCompletePendingRestartNotice: runtimeAdapters.maybeCompletePendingRestartNotice,
     turnRecoveryStore,
     safeSendToChannel,
-    bootstrapChannelMappings,
+    fetchChannelByRouteId,
+    startBackendRuntime: () => backendRuntime?.start?.(),
+    setBackendReady: (value) => backendRuntime?.setReady?.(value),
     getMappedChannelCount: () => Object.keys(getChannelSetups()).length,
     startHeartbeatLoop: runtimeAdapters.startHeartbeatLoop
   });

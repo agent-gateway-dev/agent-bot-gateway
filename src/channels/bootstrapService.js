@@ -1,3 +1,5 @@
+import { resolveDiscordGuild } from "./resolveGuild.js";
+
 export function createBootstrapService(deps) {
   const {
     ChannelType,
@@ -27,7 +29,7 @@ export function createBootstrapService(deps) {
 
     if (forceRebuild) {
       rebuildStats = await resetManagedLayout(guild);
-      setChannelSetups({});
+      setChannelSetups(collectExternalRouteSetups(getChannelSetups()));
     }
 
     await guild.channels.fetch();
@@ -38,6 +40,10 @@ export function createBootstrapService(deps) {
     const merged = { ...getChannelSetups(), ...discoveredFromTopics };
     const sanitized = {};
     for (const [channelId, setup] of Object.entries(merged)) {
+      if (isExternalRouteId(channelId)) {
+        sanitized[channelId] = setup;
+        continue;
+      }
       const channel = guild.channels.cache.get(channelId);
       if (channel?.type === ChannelType.GuildText) {
         sanitized[channelId] = setup;
@@ -100,43 +106,7 @@ export function createBootstrapService(deps) {
   }
 
   async function resolveGuild() {
-    const configuredGuildId = process.env.DISCORD_GUILD_ID;
-    if (configuredGuildId) {
-      const guild = discord.guilds.cache.get(configuredGuildId);
-      if (guild) {
-        return guild;
-      }
-      const fetchedGuild = await discord.guilds.fetch(configuredGuildId).catch(() => null);
-      if (fetchedGuild) {
-        return fetchedGuild;
-      }
-      const allGuilds = await discord.guilds.fetch().catch(() => new Map());
-      const knownGuilds = [...allGuilds.values()].map((g) => `${g.name} (${g.id})`);
-      const appId = discord.application?.id;
-      throw new Error(
-        [
-          `DISCORD_GUILD_ID=${configuredGuildId} is not visible to this bot.`,
-          knownGuilds.length > 0
-            ? `Bot can access: ${knownGuilds.join(", ")}`
-            : "Bot is not in any guilds.",
-          appId
-            ? `Re-invite with guild install + bot scope: https://discord.com/oauth2/authorize?client_id=${appId}&scope=bot%20applications.commands&permissions=274877975552`
-            : "Re-invite the bot with guild install and bot scope."
-        ].join(" ")
-      );
-    }
-
-    const guilds = [...discord.guilds.cache.values()];
-    if (guilds.length === 1) {
-      return guilds[0];
-    }
-
-    const fetched = await discord.guilds.fetch().catch(() => new Map());
-    if (fetched.size === 1) {
-      return [...fetched.values()][0];
-    }
-
-    throw new Error("Set DISCORD_GUILD_ID (bot is in multiple guilds).");
+    return resolveDiscordGuild(discord);
   }
 
   async function ensureProjectsCategory(guild) {
@@ -186,9 +156,12 @@ export function createBootstrapService(deps) {
 
     const snapshot = state.snapshot();
     const bindings = snapshot?.threadBindings ?? {};
-    const clearedBindings = Object.keys(bindings).length;
+    const discordBindingIds = Object.keys(bindings).filter((repoChannelId) => !isExternalRouteId(repoChannelId));
+    const clearedBindings = discordBindingIds.length;
     if (clearedBindings > 0) {
-      state.clearAllBindings();
+      for (const repoChannelId of discordBindingIds) {
+        state.clearBinding(repoChannelId);
+      }
       await state.save();
     }
 
@@ -372,6 +345,9 @@ export function createBootstrapService(deps) {
     const setups = getChannelSetups();
 
     for (const [repoChannelId, binding] of Object.entries(bindings)) {
+      if (isExternalRouteId(repoChannelId)) {
+        continue;
+      }
       const channel = guild.channels.cache.get(repoChannelId);
       const valid =
         !!channel &&
@@ -408,6 +384,20 @@ export function createBootstrapService(deps) {
       .replace(/^-+/, "")
       .replace(/-+$/, "");
     return (cleaned || "repo").slice(0, 100);
+  }
+
+  function collectExternalRouteSetups(setups) {
+    const preserved = {};
+    for (const [routeId, setup] of Object.entries(setups ?? {})) {
+      if (isExternalRouteId(routeId)) {
+        preserved[routeId] = setup;
+      }
+    }
+    return preserved;
+  }
+
+  function isExternalRouteId(routeId) {
+    return String(routeId ?? "").includes(":");
   }
 
   function isLegacyProjectCategoryName(categoryNameLower, legacyBaseNames) {

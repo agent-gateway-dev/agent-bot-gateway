@@ -1,6 +1,6 @@
 import { ChannelType, MessageFlags } from "discord.js";
 import { buildBridgeRuntimes } from "./buildRuntimes.js";
-import { isDiscordMissingPermissionsError } from "./runtimeUtils.js";
+import { isDiscordMissingPermissionsError, waitForDiscordReady } from "./runtimeUtils.js";
 
 export function attachBuiltRuntimes(params) {
   const {
@@ -25,7 +25,8 @@ export function attachBuiltRuntimes(params) {
     config,
     state,
     activeTurns,
-    pendingApprovals
+    pendingApprovals,
+    processStartedAt
   } = context;
   const {
     approvalButtonPrefix,
@@ -38,19 +39,45 @@ export function attachBuiltRuntimes(params) {
     statePath,
     configPath,
     renderVerbosity,
+    backendHttpEnabled,
+    backendHttpHost,
+    backendHttpPort,
+    feishuEnabled,
+    feishuAppId,
+    feishuAppSecret,
+    feishuVerificationToken,
+    feishuTransport,
+    feishuPort,
+    feishuHost,
+    feishuWebhookPath,
+    feishuGeneralChatId,
+    feishuGeneralCwd,
+    feishuRequireMentionInGroup,
     generalChannelId,
     generalChannelName,
     generalChannelCwd
   } = runtimeEnv;
 
-  const { bootstrapChannelMappings, notificationRuntime, serverRequestRuntime, discordRuntime } = buildBridgeRuntimes({
+  const {
+    bootstrapChannelMappings,
+    registerSlashCommands,
+    backendRuntime,
+    platformRegistry,
+    feishuRuntime,
+    notificationRuntime,
+    serverRequestRuntime,
+    discordRuntime
+  } = buildBridgeRuntimes({
     ChannelType,
     MessageFlags,
     path,
     fs,
     execFileAsync,
     discord,
+    discordToken: context.discordToken,
     codex,
+    fetchChannelByRouteId: context.fetchChannelByRouteId,
+    processStartedAt,
     config,
     state,
     activeTurns,
@@ -65,6 +92,21 @@ export function attachBuiltRuntimes(params) {
     statePath,
     configPath,
     renderVerbosity,
+    backendHttpEnabled,
+    backendHttpHost,
+    backendHttpPort,
+    waitForDiscordReady,
+    feishuEnabled,
+    feishuAppId,
+    feishuAppSecret,
+    feishuVerificationToken,
+    feishuTransport,
+    feishuPort,
+    feishuHost,
+    feishuWebhookPath,
+    feishuGeneralChatId,
+    feishuGeneralCwd,
+    feishuRequireMentionInGroup,
     generalChannelId,
     generalChannelName,
     generalChannelCwd,
@@ -83,6 +125,9 @@ export function attachBuiltRuntimes(params) {
   refs.notificationRuntime = notificationRuntime;
   refs.serverRequestRuntime = serverRequestRuntime;
   refs.discordRuntime = discordRuntime;
+  refs.platformRegistry = platformRegistry;
+  refs.backendRuntime = backendRuntime;
+  refs.feishuRuntime = feishuRuntime;
 
-  return { bootstrapChannelMappings };
+  return { bootstrapChannelMappings, registerSlashCommands, backendRuntime, feishuRuntime, platformRegistry };
 }

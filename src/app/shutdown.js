@@ -1,6 +1,6 @@
 import process from "node:process";
 
-export function createShutdownHandler({ codex, discord, stopHeartbeatLoop }) {
+export function createShutdownHandler({ codex, discord, stopHeartbeatLoop, stopBackendRuntime, stopPlatformRuntimes }) {
   let shuttingDown = false;
   return async function shutdown(exitCode) {
     if (shuttingDown) {
@@ -11,6 +11,8 @@ export function createShutdownHandler({ codex, discord, stopHeartbeatLoop }) {
     try {
       await codex.stop();
     } catch {}
+    await stopBackendRuntime?.();
+    await stopPlatformRuntimes?.();
     discord.destroy();
     process.exit(exitCode);
   };

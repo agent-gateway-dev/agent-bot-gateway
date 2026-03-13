@@ -25,7 +25,8 @@ export function buildCommandRuntime(deps) {
     getChannelSetups,
     setChannelSetups,
     runtimeAdapters,
-    safeReply
+    safeReply,
+    getPlatformRegistry
   } = deps;
 
   const bootstrapService = createBootstrapService({
@@ -71,13 +72,26 @@ export function buildCommandRuntime(deps) {
     applyApprovalDecision: runtimeAdapters.applyApprovalDecision,
     safeReply,
     getChannelSetups,
-    setChannelSetups
+    setChannelSetups,
+    getPlatformRegistry
   });
-  const { handleCommand, handleInitRepoCommand } = commandRouter;
+  const {
+    getHelpText,
+    isCommandSupportedForPlatform,
+    runManagedRouteCommand,
+    handleCommand,
+    handleInitRepoCommand,
+    handleSetPathCommand
+  } =
+    commandRouter;
 
   return {
     bootstrapChannelMappings,
+    getHelpText,
+    isCommandSupportedForPlatform,
+    runManagedRouteCommand,
     handleCommand,
-    handleInitRepoCommand
+    handleInitRepoCommand,
+    handleSetPathCommand
   };
 }

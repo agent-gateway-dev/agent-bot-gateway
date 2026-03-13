@@ -1,14 +1,16 @@
 export function createChannelMessaging(deps) {
-  const { discord } = deps;
+  const { fetchChannelByRouteId } = deps;
 
   async function safeReply(message, content) {
     try {
       return await message.reply(content);
     } catch (error) {
-      if (!isChannelUnavailableError(error)) {
+      if (!isChannelUnavailableError(error) && !message?.channel?.isTextBased?.()) {
         throw error;
       }
-      const channel = await discord.channels.fetch(message.channelId).catch(() => null);
+      const channel =
+        (message?.channel?.isTextBased?.() ? message.channel : null) ??
+        (await fetchChannelByRouteId(message.channelId).catch(() => null));
       if (channel && channel.isTextBased()) {
         try {
           return await channel.send(content);
@@ -24,7 +26,7 @@ export function createChannelMessaging(deps) {
   }
 
   async function safeSendToChannel(channel, text) {
-    if (!channel || !channel.isTextBased()) {
+    if (!channel || typeof channel.isTextBased !== "function" || !channel.isTextBased()) {
       return null;
     }
     try {
@@ -38,7 +40,7 @@ export function createChannelMessaging(deps) {
   }
 
   async function safeSendToChannelPayload(channel, payload) {
-    if (!channel || !channel.isTextBased()) {
+    if (!channel || typeof channel.isTextBased !== "function" || !channel.isTextBased()) {
       return null;
     }
     try {

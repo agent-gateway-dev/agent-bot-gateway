@@ -79,13 +79,9 @@ describe("turn recovery store", () => {
     };
 
     const summary = await store.reconcilePending({
-      discord: {
-        channels: {
-          async fetch(channelId: string) {
-            void channelId;
-            return channel;
-          }
-        }
+      fetchChannelByRouteId: async (channelId: string) => {
+        void channelId;
+        return channel;
       },
       codex: {
         async request(method: string) {

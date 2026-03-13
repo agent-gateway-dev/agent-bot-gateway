@@ -16,6 +16,7 @@ export function createRuntimeOps(deps) {
     exitOnRestartAck,
     safeReply,
     safeSendToChannel,
+    fetchChannelByRouteId,
     truncateStatusText,
     shutdown
   } = deps;
@@ -102,7 +103,7 @@ export function createRuntimeOps(deps) {
     await fs.writeFile(restartRequestPath, JSON.stringify(requestPayload, null, 2), "utf8");
   }
 
-  async function maybeCompletePendingRestartNotice(discord) {
+  async function maybeCompletePendingRestartNotice() {
     let pending;
     try {
       const raw = await fs.readFile(restartNoticePath, "utf8");
@@ -116,7 +117,7 @@ export function createRuntimeOps(deps) {
       await fs.unlink(restartNoticePath).catch(() => {});
       return;
     }
-    const channel = await discord.channels.fetch(channelId).catch(() => null);
+    const channel = await fetchChannelByRouteId(channelId).catch(() => null);
     if (!channel || !channel.isTextBased()) {
       await fs.unlink(restartNoticePath).catch(() => {});
       return;

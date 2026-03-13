@@ -2,8 +2,22 @@
   "autoDiscoverProjects": true,
   "defaultModel": "gpt-5.3-codex",
   "defaultEffort": "medium",
+  "approvalPolicy": "never",
+  "sandboxMode": "workspace-write",
   "allowedUserIds": [
     "123456789012345678"
   ],
-  "channels": {}
+  "allowedFeishuUserIds": [
+    "ou_xxxxxxxxxxxxxxxxx"
+  ],
+  "channels": {
+    "123456789012345678": {
+      "cwd": "/absolute/path/to/discord/repo",
+      "model": "gpt-5.3-codex"
+    },
+    "feishu:oc_xxxxxxxxxxxxxxxxx": {
+      "cwd": "/absolute/path/to/feishu/repo",
+      "model": "gpt-5.3-codex"
+    }
+  }
 }

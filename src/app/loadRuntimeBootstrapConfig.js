@@ -10,9 +10,12 @@ import { createDebugLog } from "./runtimeUtils.js";
 export async function loadRuntimeBootstrapConfig() {
   dotenv.config();
 
-  const discordToken = process.env.DISCORD_BOT_TOKEN;
-  if (!discordToken) {
-    console.error("Missing DISCORD_BOT_TOKEN");
+  const discordToken = String(process.env.DISCORD_BOT_TOKEN ?? "").trim() || null;
+  const feishuEnabled = Boolean(
+    String(process.env.FEISHU_APP_ID ?? "").trim() && String(process.env.FEISHU_APP_SECRET ?? "").trim()
+  );
+  if (!discordToken && !feishuEnabled) {
+    console.error("Missing chat platform credentials. Set DISCORD_BOT_TOKEN or FEISHU_APP_ID + FEISHU_APP_SECRET.");
     process.exit(1);
   }
 

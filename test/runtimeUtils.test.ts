@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import {
   createDebugLog,
   formatInputTextForSetup,
+  isBenignCodexStderrLine,
   isDiscordMissingPermissionsError
 } from "../src/app/runtimeUtils.js";
 
@@ -22,6 +23,20 @@ describe("runtime utils", () => {
     expect(isDiscordMissingPermissionsError({ rawError: { code: 50013 } })).toBe(true);
     expect(isDiscordMissingPermissionsError({ message: "Missing permissions for this action" })).toBe(true);
     expect(isDiscordMissingPermissionsError({ code: 40001 })).toBe(false);
+  });
+
+  test("isBenignCodexStderrLine filters known fallback noise", () => {
+    expect(
+      isBenignCodexStderrLine(
+        "\u001b[2m2026-03-13T04:50:24.506299Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_core::rollout::recorder\u001b[0m: Falling back on rollout system"
+      )
+    ).toBe(true);
+    expect(
+      isBenignCodexStderrLine(
+        "2026-03-13T04:36:40Z WARN codex_core::state_db: state db record_discrepancy: list_threads_with_db_fallback, falling_back"
+      )
+    ).toBe(true);
+    expect(isBenignCodexStderrLine("ERROR some_other_component: real failure")).toBe(false);
   });
 
   describe("createDebugLog", () => {
