@@ -10,9 +10,6 @@ const THREADS_PER_PAGE = 100;
 const MAX_REQUESTS_PER_THREAD = 100;
 const THREAD_LIST_CACHE_TTL_MS = 5 * 60 * 1000;  // 5 minutes
 
-let threadListCache = null;
-let threadListCacheTime = 0;
-
 export function createTurnRecoveryStore(deps) {
   const { fs, path, recoveryPath, debugLog, dataDir = fs.cwd ? fs.cwd() : process.cwd() } = deps;
 
@@ -37,6 +34,8 @@ export function createTurnRecoveryStore(deps) {
     ? Math.max(MIN_MAX_REQUESTS, Math.floor(Number(process.env.TURN_REQUEST_STATUS_MAX_RECORDS)))
     : DEFAULT_MAX_REQUESTS;
   let saveQueue = Promise.resolve();
+  let threadListCache = null;
+  let threadListCacheTime = 0;
 
   async function load() {
     await fs.mkdir(path.dirname(resolvedRecoveryPath), { recursive: true });
@@ -125,6 +124,7 @@ export function createTurnRecoveryStore(deps) {
       statusMessageId: tracker.statusMessageId ?? null,
       cwd: tracker.cwd ?? null,
       lifecyclePhase: tracker.lifecyclePhase ?? null,
+      recoveryNotifiedAt: store.turns[tracker.threadId]?.recoveryNotifiedAt ?? null,
       seenDelta: tracker.seenDelta === true,
       fullTextLength: typeof tracker.fullText === "string" ? tracker.fullText.length : 0,
       updatedAt: new Date().toISOString()
@@ -274,6 +274,24 @@ export function createTurnRecoveryStore(deps) {
           missingThread += 1;
           recoveryStatus = "recovery_unavailable";
         }
+
+        if (turn.recoveryNotifiedAt) {
+          try {
+            await removeTurn(turn.threadId, {
+              status: recoveryStatus
+            });
+          } catch (removeError) {
+            console.error(`Failed to remove already-notified turn ${turn.threadId}: ${removeError.message}`);
+          }
+          continue;
+        }
+
+        store.turns[turn.threadId] = {
+          ...store.turns[turn.threadId],
+          recoveryNotifiedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        await save();
 
         let edited = false;
         if (turn.statusMessageId) {

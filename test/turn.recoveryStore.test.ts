@@ -20,7 +20,8 @@ async function makeStore() {
     fs,
     path,
     recoveryPath,
-    debugLog: () => {}
+    debugLog: () => {},
+    dataDir: dir
   });
   await store.load();
   return { store, recoveryPath };
@@ -107,7 +108,7 @@ describe("turn recovery store", () => {
     expect(editedMessages[0]).toContain("Recovered after restart");
     expect(editedMessages[0]).toContain("request_id");
     expect(Object.keys(store.snapshot().turns).length).toBe(0);
-    expect(store.getRequestStatus("req-2")?.status).toBe("recovery_pending");
+    expect(store.getRequestStatus("req-2")?.status).toBe("recovery_resumed");
   });
 
   test("marks recovered request status as unknown when thread listing fails", async () => {
@@ -154,6 +155,65 @@ describe("turn recovery store", () => {
     expect(summary.resumedKnown).toBe(0);
     expect(summary.missingThread).toBe(0);
     expect(editedMessages[0]).toContain("could not be verified safely");
-    expect(store.getRequestStatus("req-unknown")?.status).toBe("unknown");
+    expect(store.getRequestStatus("req-unknown")?.status).toBe("recovery_unknown");
+  });
+
+  test("does not send duplicate recovery notice for an already-notified turn", async () => {
+    const { store, recoveryPath } = await makeStore();
+    await store.upsertTurnFromTracker({
+      threadId: "thread-repeat",
+      repoChannelId: "channel-repeat",
+      requestId: "req-repeat",
+      channel: { id: "channel-repeat" },
+      statusMessageId: "status-repeat",
+      cwd: "/tmp/repo",
+      lifecyclePhase: "running",
+      seenDelta: false,
+      fullText: ""
+    });
+
+    const raw = JSON.parse(await fs.readFile(recoveryPath, "utf8"));
+    raw.turns["thread-repeat"].recoveryNotifiedAt = "2026-03-14T00:00:00.000Z";
+    await fs.writeFile(recoveryPath, JSON.stringify(raw, null, 2), "utf8");
+    await store.load();
+
+    let sendCount = 0;
+    let editCount = 0;
+    const channel = {
+      isTextBased: () => true,
+      messages: {
+        async fetch(messageId: string) {
+          return {
+            id: messageId,
+            async edit() {
+              editCount += 1;
+              return this;
+            }
+          };
+        }
+      }
+    };
+
+    const summary = await store.reconcilePending({
+      fetchChannelByRouteId: async () => channel,
+      codex: {
+        async request(method: string) {
+          if (method === "thread/list") {
+            return { data: [{ id: "thread-repeat" }], nextCursor: null };
+          }
+          return { data: [], nextCursor: null };
+        }
+      },
+      safeSendToChannel: async () => {
+        sendCount += 1;
+        return null;
+      }
+    });
+
+    expect(summary.reconciled).toBe(1);
+    expect(editCount).toBe(0);
+    expect(sendCount).toBe(0);
+    expect(Object.keys(store.snapshot().turns).length).toBe(0);
+    expect(store.getRequestStatus("req-repeat")?.status).toBe("recovery_resumed");
   });
 });
