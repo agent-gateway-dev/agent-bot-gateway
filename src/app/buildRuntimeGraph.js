@@ -31,7 +31,8 @@ export async function buildRuntimeGraph(deps) {
     attachmentItemTypes,
     attachmentIssueLimitPerTurn,
     inFlightRecoveryPath,
-    extraWritableRoots
+    extraWritableRoots,
+    stripAnsiForDiscord
   } = runtimeEnv;
 
   const discord = new Client({
@@ -60,7 +61,10 @@ export async function buildRuntimeGraph(deps) {
     }
     return await discord.channels.fetch(routeId).catch(() => null);
   };
-  const channelMessaging = createChannelMessaging({ fetchChannelByRouteId });
+  const channelMessaging = createChannelMessaging({
+    fetchChannelByRouteId,
+    stripAnsiForDiscord
+  });
   const { safeReply, safeSendToChannel, safeSendToChannelPayload } = channelMessaging;
   const sandboxPolicyResolver = createSandboxPolicyResolver({
     path,
@@ -134,8 +138,11 @@ export async function buildRuntimeGraph(deps) {
     onTurnCreated: async (tracker) => {
       await turnRecoveryStore.upsertTurnFromTracker(tracker);
     },
-    onTurnAborted: async (threadId) => {
-      await turnRecoveryStore.removeTurn(threadId);
+    onTurnAborted: async (threadId, tracker) => {
+      await turnRecoveryStore.removeTurn(threadId, {
+        status: "cancelled",
+        errorMessage: tracker?.failureMessage ?? null
+      });
     },
     onActiveTurnsChanged: () => refs.runtimeOps?.writeHeartbeatFile()
   });

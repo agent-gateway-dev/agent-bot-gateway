@@ -1,9 +1,12 @@
+import { stripAnsi } from "../utils/stripAnsi.js";
+
 export function createChannelMessaging(deps) {
-  const { fetchChannelByRouteId } = deps;
+  const { fetchChannelByRouteId, stripAnsiForDiscord = false } = deps;
 
   async function safeReply(message, content) {
+    const sanitizedContent = sanitizeOutboundText(content, resolvePlatform(message));
     try {
-      return await message.reply(content);
+      return await message.reply(sanitizedContent);
     } catch (error) {
       if (!isChannelUnavailableError(error) && !message?.channel?.isTextBased?.()) {
         throw error;
@@ -13,7 +16,8 @@ export function createChannelMessaging(deps) {
         (await fetchChannelByRouteId(message.channelId).catch(() => null));
       if (channel && channel.isTextBased()) {
         try {
-          return await channel.send(content);
+          const fallbackContent = sanitizeOutboundText(sanitizedContent, resolvePlatform(message, channel));
+          return await channel.send(fallbackContent);
         } catch (sendError) {
           if (!isChannelUnavailableError(sendError)) {
             throw sendError;
@@ -30,7 +34,7 @@ export function createChannelMessaging(deps) {
       return null;
     }
     try {
-      return await channel.send(text);
+      return await channel.send(sanitizeOutboundText(text, resolvePlatform(null, channel)));
     } catch (error) {
       if (!isChannelUnavailableError(error)) {
         throw error;
@@ -44,13 +48,54 @@ export function createChannelMessaging(deps) {
       return null;
     }
     try {
-      return await channel.send(payload);
+      const platform = resolvePlatform(null, channel);
+      const sanitizedPayload = sanitizePayload(payload, platform);
+      return await channel.send(sanitizedPayload);
     } catch (error) {
       if (!isChannelUnavailableError(error)) {
         throw error;
       }
       return null;
     }
+  }
+
+  function resolvePlatform(message, channel) {
+    const platform = String(channel?.platform ?? message?.platform ?? "").trim().toLowerCase();
+    if (platform) {
+      return platform;
+    }
+    const routeId = String(channel?.id ?? message?.channelId ?? "").trim().toLowerCase();
+    if (routeId.startsWith("feishu:")) {
+      return "feishu";
+    }
+    return "discord";
+  }
+
+  function sanitizeOutboundText(content, platform) {
+    if (typeof content !== "string") {
+      return content;
+    }
+    if (platform === "feishu" || (platform === "discord" && stripAnsiForDiscord)) {
+      return stripAnsi(content);
+    }
+    return content;
+  }
+
+  function sanitizePayload(payload, platform) {
+    if (!payload || typeof payload !== "object") {
+      return sanitizeOutboundText(payload, platform);
+    }
+    if (typeof payload.content !== "string") {
+      return payload;
+    }
+    const sanitizedContent = sanitizeOutboundText(payload.content, platform);
+    if (sanitizedContent === payload.content) {
+      return payload;
+    }
+    return {
+      ...payload,
+      content: sanitizedContent
+    };
   }
 
   return {

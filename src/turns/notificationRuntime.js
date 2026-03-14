@@ -1,4 +1,5 @@
 import { collectLikelyLocalPathsFromText, extractAttachmentCandidates } from "../attachments/service.js";
+import { isMissingRolloutPathError } from "../app/runtimeUtils.js";
 
 export function createNotificationRuntime(deps) {
   const {
@@ -135,14 +136,23 @@ export function createNotificationRuntime(deps) {
       const threadId = normalized.threadId;
       const message = normalized.errorMessage;
       if (threadId) {
-      const tracker = activeTurns.get(threadId);
-      if (tracker && isTransientReconnectErrorMessage(message)) {
+        const tracker = activeTurns.get(threadId);
+        if (tracker && isTransientReconnectErrorMessage(message)) {
           noteReconnectObserved(tracker);
           markTurnReconnecting(tracker, "🔄 Temporary reconnect while processing. Continuing automatically while connection recovers...");
           debugLog("transport", "transient reconnect while turn active", {
             threadId,
             turnId: threadId,
             discordMessageId: tracker.statusMessageId ?? null,
+            message: truncateStatusText(String(message ?? ""), 200)
+          });
+          return;
+        }
+        if (isMissingRolloutPathError(message)) {
+          debugLog("transport", "ignoring missing rollout path error", {
+            threadId,
+            turnId: threadId,
+            discordMessageId: tracker?.statusMessageId ?? null,
             message: truncateStatusText(String(message ?? ""), 200)
           });
           return;
@@ -173,7 +183,9 @@ export function createNotificationRuntime(deps) {
     const delay = Math.max(0, 800 - elapsed);
     tracker.flushTimer = setTimeout(() => {
       tracker.flushTimer = null;
-      void flushTrackerParagraphs(tracker, { force: false });
+      void flushTrackerParagraphs(tracker, { force: false }).catch((error) => {
+        console.error(`tracker flush failed for ${tracker?.threadId ?? "unknown"}: ${formatErrorMessage(error)}`);
+      });
     }, delay);
   }
 
@@ -205,6 +217,8 @@ export function createNotificationRuntime(deps) {
     tracker.finalizing = true;
     clearTurnFinalizeTimer(tracker);
     tracker.turnCompletionRequested = false;
+    let finalError = error ? toError(error) : null;
+    let resolvedText = null;
 
     if (tracker.flushTimer) {
       clearTimeout(tracker.flushTimer);
@@ -213,21 +227,22 @@ export function createNotificationRuntime(deps) {
 
     try {
       clearThinkingTicker(tracker);
-      if (error) {
+      if (finalError) {
         tracker.failed = true;
         tracker.completed = true;
-        tracker.failureMessage = error.message;
+        tracker.failureMessage = finalError.message;
         transitionTurnPhase(tracker, TURN_PHASE.FAILED);
-        if (isTransientReconnectErrorMessage(error.message)) {
+        if (isTransientReconnectErrorMessage(finalError.message)) {
           pushStatusLine(
             tracker,
             "🔄 Temporary reconnect while processing did not recover in time. Please retry."
           );
         } else {
-          pushStatusLine(tracker, `❌ Error: ${truncateStatusText(error.message, 220)}`);
+          pushStatusLine(tracker, `❌ Error: ${truncateStatusText(finalError.message, 220)}`);
         }
-        await safeSendToChannel(tracker.channel, `❌ Error: ${truncateStatusText(error.message, 220)}`);
-        tracker.reject(error);
+        await safeSendToChannel(tracker.channel, `❌ Error: ${truncateStatusText(finalError.message, 220)}`).catch((sendError) => {
+          console.error(`failed to send turn error for ${threadId}: ${formatErrorMessage(sendError)}`);
+        });
         return;
       }
 
@@ -270,14 +285,44 @@ export function createNotificationRuntime(deps) {
       if (diffBlock) {
         await sendChunkedToChannel(tracker.channel, diffBlock);
       }
-
-      tracker.resolve(tracker.fullText);
+      resolvedText = tracker.fullText;
+    } catch (caughtError) {
+      const normalizedError = toError(caughtError);
+      if (!finalError) {
+        finalError = normalizedError;
+        tracker.failed = true;
+        tracker.completed = true;
+        tracker.failureMessage = normalizedError.message;
+        transitionTurnPhase(tracker, TURN_PHASE.FAILED);
+        pushStatusLine(tracker, `❌ Error: ${truncateStatusText(normalizedError.message, 220)}`);
+        await safeSendToChannel(tracker.channel, `❌ Error: ${truncateStatusText(normalizedError.message, 220)}`).catch(
+          (sendError) => {
+            console.error(`failed to send turn error for ${threadId}: ${formatErrorMessage(sendError)}`);
+          }
+        );
+      }
+      console.error(`turn finalization failed for ${threadId}: ${formatErrorMessage(normalizedError)}`);
     } finally {
       clearWorkingTicker(tracker);
       clearThinkingTicker(tracker);
       activeTurns.delete(threadId);
-      await onTurnFinalized?.(tracker);
-      await writeHeartbeatFile();
+      if (finalError) {
+        settleTracker(tracker, "reject", finalError);
+      } else {
+        settleTracker(tracker, "resolve", resolvedText ?? tracker.fullText);
+      }
+      if (typeof onTurnFinalized === "function") {
+        try {
+          await onTurnFinalized(tracker);
+        } catch (finalizeError) {
+          console.error(`onTurnFinalized failed for ${threadId}: ${formatErrorMessage(finalizeError)}`);
+        }
+      }
+      try {
+        await writeHeartbeatFile();
+      } catch (heartbeatError) {
+        console.error(`failed to write heartbeat after turn ${threadId}: ${formatErrorMessage(heartbeatError)}`);
+      }
     }
   }
 
@@ -379,7 +424,9 @@ export function createNotificationRuntime(deps) {
     }
     clearTurnFinalizeTimer(tracker);
     tracker.turnFinalizeTimer = setTimeout(() => {
-      void maybeFinalizeTurnWhenSettled(threadId);
+      void maybeFinalizeTurnWhenSettled(threadId).catch((error) => {
+        console.error(`turn settlement check failed for ${threadId}: ${formatErrorMessage(error)}`);
+      });
     }, turnCompletionQuietMs);
     if (typeof tracker.turnFinalizeTimer?.unref === "function") {
       tracker.turnFinalizeTimer.unref();
@@ -453,9 +500,13 @@ export function createNotificationRuntime(deps) {
       pushStatusLine(tracker, payload);
       await editTrackerMessage(tracker, buildTrackerMessageContent(tracker));
     };
-    void tick();
+    void tick().catch((error) => {
+      console.error(`thinking ticker failed for ${tracker?.threadId ?? "unknown"}: ${formatErrorMessage(error)}`);
+    });
     tracker.thinkingTicker = setInterval(() => {
-      void tick();
+      void tick().catch((error) => {
+        console.error(`thinking ticker failed for ${tracker?.threadId ?? "unknown"}: ${formatErrorMessage(error)}`);
+      });
     }, 3000);
     if (typeof tracker.thinkingTicker?.unref === "function") {
       tracker.thinkingTicker.unref();
@@ -530,9 +581,13 @@ export function createNotificationRuntime(deps) {
       }
     };
 
-    void tick();
+    void tick().catch((error) => {
+      console.error(`working ticker failed for ${tracker?.threadId ?? "unknown"}: ${formatErrorMessage(error)}`);
+    });
     tracker.workingTicker = setInterval(() => {
-      void tick();
+      void tick().catch((error) => {
+        console.error(`working ticker failed for ${tracker?.threadId ?? "unknown"}: ${formatErrorMessage(error)}`);
+      });
     }, 3000);
     if (typeof tracker.workingTicker?.unref === "function") {
       tracker.workingTicker.unref();
@@ -857,4 +912,31 @@ function splitTextForMessagesFallback(text, limit = 1900) {
     chunks.push(normalized.slice(offset, offset + limit));
   }
   return chunks;
+}
+
+function settleTracker(tracker, action, value) {
+  if (!tracker || tracker.promiseSettled) {
+    return;
+  }
+  tracker.promiseSettled = true;
+  const settle = action === "reject" ? tracker.reject : tracker.resolve;
+  if (typeof settle !== "function") {
+    return;
+  }
+  try {
+    settle(value);
+  } catch (error) {
+    console.error(`turn ${action} callback failed for ${tracker?.threadId ?? "unknown"}: ${formatErrorMessage(error)}`);
+  }
+}
+
+function toError(error) {
+  if (error instanceof Error) {
+    return error;
+  }
+  return new Error(formatErrorMessage(error));
+}
+
+function formatErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error ?? "unknown");
 }
