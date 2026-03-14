@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/config/loadConfig.js";
 
 const ENV_KEYS = [
@@ -11,6 +11,12 @@ const ENV_KEYS = [
   "CODEX_SANDBOX_MODE"
 ] as const;
 const ORIGINAL_ENV = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+
+beforeEach(() => {
+  for (const key of ENV_KEYS) {
+    delete process.env[key];
+  }
+});
 
 function writeJsonTempFile(payload: unknown): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dc-bridge-load-config-"));

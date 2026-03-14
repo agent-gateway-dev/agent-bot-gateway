@@ -1,4 +1,5 @@
 import { resolveDiscordGuild } from "./resolveGuild.js";
+import { isMissingRolloutPathError } from "../app/runtimeUtils.js";
 
 export function createBootstrapService(deps) {
   const {
@@ -225,7 +226,16 @@ export function createBootstrapService(deps) {
       if (cursor) {
         params.cursor = cursor;
       }
-      const response = await codex.request("thread/list", params);
+      let response;
+      try {
+        response = await codex.request("thread/list", params);
+      } catch (error) {
+        if (isMissingRolloutPathError(error?.message)) {
+          console.warn(`skipping project discovery from codex because rollout path metadata is unavailable: ${error.message}`);
+          break;
+        }
+        throw error;
+      }
       const rows = Array.isArray(response?.data) ? response.data : [];
       for (const row of rows) {
         if (typeof row?.cwd === "string" && row.cwd.trim()) {

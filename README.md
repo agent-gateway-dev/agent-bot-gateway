@@ -1,67 +1,53 @@
-# Codex Chat Bridge
+# Codex Discord Bridge
 
 [![Codex Discord Bridge Hero](public/images/cover_new.png)](https://youtu.be/RRF-F5jDS50)
 
-Long-running Codex backend bridge for Discord and Feishu. It starts `codex app-server` on the host, binds chat routes to persistent Codex threads, and exposes standard health endpoints for service deployment.
+Personal Discord bridge for Codex app-server.
 
-## Overview
+## What It Does
 
-- Discord project channels are auto-discovered from Codex `thread/list` and managed under a category.
-- Discord supports plain text prompts, image attachments, legacy `!commands`, and slash commands.
-- Feishu supports mapped chats through either webhook callbacks or long-connection transport, with the same command routing.
-- One chat route maps to one persistent Codex thread.
-- Each route runs turns serially, so one channel/chat cannot overlap turns.
-- The bridge can run in the foreground, behind a restart supervisor, as a macOS `launchd` agent, or as a Linux `systemd` service.
-- A standard HTTP backend exposes `/healthz`, `/readyz`, and optionally `/feishu/events` when Feishu webhook mode is enabled.
+- Auto-discovers existing project paths (`cwd`) from Codex via `thread/list`.
+- Creates/manages one Discord text channel per discovered project.
+- Keeps all managed project channels under the `codex-projects` category.
+- Persists one Codex thread binding per repo channel:
+  - repo text channel -> one Codex app-server thread
+- Queues messages per repo channel (one active turn per channel).
+- Emits assistant output as paragraph messages (no single-message edit loop).
+- Emits separate status messages for non-agent items (tools/commands/etc.).
+- Handles approval requests via buttons (with command fallback).
+- Uploads attachment files for configured item types (default: `imageView`, `toolCall`, `mcpToolCall`, `commandExecution`).
 
-## System Architecture
+## Architecture Map
 
-```mermaid
-flowchart LR
-  subgraph Ingress["Chat Ingress"]
-    Discord["Discord runtime"]
-    Feishu["Feishu runtime"]
-    Http["HTTP backend"]
-  end
-
-  Registry["Platform registry"]
-  Commands["Command router"]
-  Queue["Turn runner / per-route queues"]
-  Codex["Codex RPC client"]
-  App["codex app-server"]
-  Notify["Notification runtime"]
-  Approvals["Approval runtime"]
-  State["Config + state files"]
-
-  Discord --> Registry
-  Feishu --> Registry
-  Http --> Registry
-  Registry --> Commands
-  Registry --> Queue
-  Commands --> State
-  Queue --> Codex
-  Codex --> App
-  App --> Notify
-  App --> Approvals
-  Notify --> Registry
-  Approvals --> Registry
-  Queue --> State
+```text
+src/index.js                  Thin runtime entrypoint (`startMainRuntime`)
+src/app/mainRuntime.js        Compose runtime context + process runner
+src/app/loadRuntimeBootstrapConfig.js Env/config/state bootstrap loading
+src/app/buildRuntimeGraph.js  Build core runtime services/adapters/turn runner
+src/app/runBridgeProcess.js   Wire listeners/runtimes/startup/shutdown flow
+src/config/loadConfig.js      Env + channel config loading/normalization
+src/channels/context.js       Channel/repo context and bindings
+src/codexRpcClient.js         Codex app-server transport
+src/codex/turnRunner.js       Per-channel queue and turn lifecycle
+src/codex/notificationMapper.js Normalized notification boundaries
+src/codex/approvalPayloads.js Approval request/response mapping
+src/attachments/service.js    Attachment candidate extraction + upload policy
+src/render/messageRenderer.js Message render plan, redaction, chunking
+src/cli/**                    Operator CLI (`status`, `doctor`, `start`, `stop`, `reload`, `logs`)
+src/app/main.ts               TS bootstrap entry used by `start:ts`
+src/types/**                  TS boundary contracts for cutover
 ```
 
-### Core Runtime Layers
+## Requirements
 
-| Layer | Primary files | Responsibility |
-| --- | --- | --- |
-| Process bootstrap | `src/index.js`, `src/app/mainRuntime.js`, `src/app/runBridgeProcess.js` | Loads env/config/state, wires services, starts/stops the bridge |
-| Platform abstraction | `src/platforms/platformRegistry.js`, `src/platforms/discordPlatform.js`, `src/platforms/feishuPlatform.js` | Normalizes platform capabilities, route lookup, startup, HTTP ingress, and shutdown |
-| Command and route management | `src/commands/router.js`, `src/channels/bootstrapService.js` | Parses commands, mutates route bindings, manages Discord auto-discovery, persists route changes |
-| Codex transport | `src/codexRpcClient.js` | Starts `codex app-server`, sends JSON-RPC requests, receives notifications and server requests |
-| Turn execution | `src/codex/turnRunner.js` | Maintains one FIFO queue per route, resumes/starts threads, retries transient reconnects, stores thread bindings |
-| Output rendering | `src/turns/notificationRuntime.js`, `src/render/messageRenderer.js` | Turns Codex deltas, lifecycle items, diffs, and summary output into chat messages |
-| Approval handling | `src/approvals/serverRequestRuntime.js` | Handles command/file approval requests, approval buttons, and unsupported tool-call fallbacks |
-| HTTP/service ops | `src/backend/httpRuntime.js`, `src/app/runtimeOps.js`, `src/cli/**` | Health endpoints, heartbeat/restart files, operator CLI, service integration |
+- Bun 1.2+
+- `codex` CLI installed on the host and authenticated
+- Discord bot token with:
+  - `MESSAGE CONTENT INTENT` enabled in the Discord developer portal
+  - channel read/send permissions in your server
+- Discord guild (server) id
 
-### Startup Sequence
+## Setup
 
 1. Load `.env`, `config/channels.json`, and `data/state.json`.
 2. Start the backend HTTP server if enabled.
@@ -122,7 +108,7 @@ sequenceDiagram
 | --- | --- | --- | --- | --- |
 | Discord | Managed repo text channel | Auto-discovered from Codex `cwd`, or bound with `!initrepo` | Writable by default | Plain text messages become prompts |
 | Discord | `#general` | Existing text channel matched by ID or name | Read-only | Useful for discussion and planning |
-| Feishu | Mapped repo chat | Explicit `feishu:<chat_id>` entry in `config/channels.json` | Writable by default | Text only |
+| Feishu | Mapped repo chat | Explicit `feishu:<chat_id>` entry in `config/channels.json` | Writable by default | Text, image input, segmented streaming replies |
 | Feishu | General chat | `FEISHU_GENERAL_CHAT_ID` | Read-only | Similar to Discord `#general` |
 
 ## Capability Summary
@@ -137,7 +123,8 @@ sequenceDiagram
 | Text `/command` style input | No | Yes |
 | Approval buttons | Yes | No |
 | Text approval commands | Yes | Yes |
-| Image input bridging | Yes | No |
+| Image input bridging | Yes | Yes |
+| Streaming answer output | Status-message edits | Segmented text messages |
 | Read-only general chat mode | Yes | Yes |
 | Webhook-less transport | N/A | Yes, `FEISHU_TRANSPORT=long-connection` |
 
@@ -287,6 +274,14 @@ curl -i http://127.0.0.1:8788/readyz
 | Decline | `!decline [id]` | `/decline [id]` | `/decline [id]` | Same routing rules as approve |
 | Cancel | `!cancel [id]` | `/cancel [id]` | `/cancel [id]` | Same routing rules as approve |
 | Init repo | `!initrepo [force]` | `/initrepo` | Not supported | Discord only, requires `DISCORD_REPO_ROOT` |
+| Create channel | `!mkchannel <name>` | Not supported | Not supported | Discord only, requires `Manage Channels` |
+| Create repo channel | `!mkrepo <name>` | Not supported | Not supported | Creates a new Discord text channel plus a repo binding under `DISCORD_REPO_ROOT` |
+| Create bound channel | `!mkbind <name> <abs-path>` | Not supported | Not supported | Creates a new Discord text channel already bound to an existing absolute path |
+| Bind | `!bind <abs-path>` | Not supported | Not supported | Binds the current Discord channel to an existing absolute path |
+| Rebind | `!rebind <abs-path>` | Not supported | Not supported | Switches the current Discord channel to a different absolute path |
+| Unbind | `!unbind` | Not supported | Not supported | Removes the current Discord channel binding |
+| Set model | `!setmodel <model>` | Not supported | Not supported | Persists a per-channel model override |
+| Clear model | `!clearmodel` | Not supported | Not supported | Removes the per-channel model override |
 | Resync | `!resync` | `/resync` | `/resync` | Re-syncs Discord managed channels |
 | Rebuild | `!rebuild` | `/rebuild` | `/rebuild` | Recreates managed Discord project channels |
 
@@ -560,7 +555,7 @@ This is the shortest reliable way to bring Feishu online with the current bridge
 - Feishu chats can also be rebound in-place with `/setpath /absolute/path`, which updates `config/channels.json`.
 - `FEISHU_GENERAL_CHAT_ID` creates one read-only general chat, similar to Discord `#general`.
 - If `FEISHU_REQUIRE_MENTION_IN_GROUP=1`, plain prompts in group chats need an `@mention`; slash-style commands such as `/status` still work.
-- Feishu now supports inbound image messages and outbound image uploads. Non-image outbound attachments still fall back to text notices.
+- Feishu now supports inbound image messages, segmented streaming text output, plus outbound image and file uploads. Unsupported outbound attachment types still fall back to text notices.
 - In long-connection mode, Feishu delivers events to one connected client instance for the app instead of broadcasting to every instance.
 - `POST /feishu/events` only needs to stay reachable in webhook mode.
 
@@ -620,23 +615,34 @@ Before enabling, set at least:
 
 ## Operator CLI
 
-```bash
-bun run cli status
-bun run cli logs
-bun run cli logs --since 10m
-bun run cli logs --clear --no-follow
-bun run cli doctor
-bun run cli config-validate
-bun run cli restart "manual restart"
-bun run cli start
-bun run cli stop
-bun run verify
-bun run test:stability
-```
+- `bun run cli status` shows runtime paths, binding count, and heartbeat status.
+- `bun run cli start` bootstraps/enables/kickstarts the launchd service (`com.codex.discord.bridge` by default).
+- `bun run cli stop` stops the launchd service via `bootout`.
+- `bun run cli logs` tails active bridge stdout/stderr logs (same paths used by launchd when configured).
+  - Supports `--clear` and `--since <10m|2h|iso>` for faster incident triage.
+- `bun run cli config-validate` validates channel/env config and reports effective defaults.
+- `bun run cli doctor` runs operational diagnostics (token/writable paths/attachment roots).
+- `bun run cli reload [reason]` writes a restart intent file for host-managed supervisors.
+- `bun run cli restart [reason]` alias for `reload`.
+- `scripts/restart-supervisor.sh -- bun run start` runs a host-side process loop that watches `data/restart-request.json` and restarts the bridge externally (with throttle/backoff).
+- Optional global command from any directory:
+  - Run `npm link` once in this repo.
+  - Then use `dc-bridge start`, `dc-bridge stop`, `dc-bridge status`, `dc-bridge logs`, `dc-bridge restart "manual restart"`, etc.
 
-If you run `npm link` once in this repo, the same commands are also available as `dc-bridge ...`.
+## Stability Checks
 
-`start` and `stop` manage the macOS `launchd` service. They do not control Linux `systemd`.
+- `bun run verify` runs `typecheck + lint + test`.
+- `bun run test:stability` runs the restart/recovery/transcript/approval integration stability suite.
+
+## Permanent Service Notes
+
+- For `launchd`, make sure `ProgramArguments` includes the absolute Bun path after `--`:
+  - `scripts/restart-supervisor.sh -- /absolute/path/to/bun run start`
+- If `ProgramArguments` accidentally inserts an empty entry, supervisor now fails fast with a clear error.
+- Include both Bun and Codex paths in launchd env when needed:
+  - `PATH` should include Bun install dir and Codex install dir.
+  - You can set `CODEX_BIN` explicitly in `EnvironmentVariables`.
+- Supervisor now clears `data/restart-request.json` after consuming a restart request to avoid repeated restarts from stale files.
 
 ## Health, State, and Logs
 
@@ -654,6 +660,16 @@ If you run `npm link` once in this repo, the same commands are also available as
 - `/readyz` flips to `200` after Codex startup, platform startup, and Discord bootstrap complete
 - neither endpoint currently performs a deep revalidation of upstream platform sessions on every request
 
+## Notes
+
+- This bot uses `codex app-server` over `stdio` and sends `initialize` + `initialized`.
+- `!mkrepo` uses `DISCORD_REPO_ROOT`; it creates the project folder from the final channel name and binds the new channel without running `git init`.
+- `!mkchannel` and `!mkbind` require Discord `Manage Channels`.
+- `!bind` and `!rebind` persist the `codex-cwd:` topic tag so bindings survive restarts without editing `config/channels.json`.
+- `!setmodel` persists a per-channel model override; `!clearmodel` removes it so the channel falls back to `defaultModel`.
+- In `workspace-write`, Git metadata roots such as `--git-dir` and `--git-common-dir` are added automatically so worktrees still function correctly.
+- `CODEX_EXTRA_WRITABLE_ROOTS` can extend writable roots when tooling stores state outside the repo.
+
 ## Attachments and Rendering
 
 - Discord input image attachments are downloaded locally and forwarded as image inputs
@@ -666,7 +682,7 @@ If you run `npm link` once in this repo, the same commands are also available as
 ## Current Limitations
 
 - Feishu chat containers are not auto-created; you still need one chat per repo if you want the Discord-style "one workspace per conversation" model
-- Feishu supports text plus inbound image messages, and can upload outbound image attachments, but still has no button approvals or general non-image attachment upload flow yet
+- Feishu supports text plus inbound image messages, segmented streaming replies, and outbound image/file attachments, but still has no button approvals
 - Discord auto-discovery depends on Codex threads having usable `cwd` values
 - Dynamic tool-call requests are not implemented beyond fallback denial
 - Native slash commands exist only on Discord; Feishu uses text `/command` messages

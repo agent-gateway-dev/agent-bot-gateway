@@ -3,6 +3,7 @@ import { createTurnRunner } from "../src/codex/turnRunner.js";
 
 const ORIGINAL_SETTLE_TIMEOUT = process.env.DISCORD_TURN_SETTLE_TIMEOUT_MS;
 const ORIGINAL_RPC_MAX_ATTEMPTS = process.env.DISCORD_RPC_RECONNECT_MAX_ATTEMPTS;
+const ORIGINAL_TURN_MAX_DURATION_MS = process.env.DISCORD_TURN_MAX_DURATION_MS;
 
 afterEach(() => {
   if (ORIGINAL_SETTLE_TIMEOUT === undefined) {
@@ -14,6 +15,11 @@ afterEach(() => {
     delete process.env.DISCORD_RPC_RECONNECT_MAX_ATTEMPTS;
   } else {
     process.env.DISCORD_RPC_RECONNECT_MAX_ATTEMPTS = ORIGINAL_RPC_MAX_ATTEMPTS;
+  }
+  if (ORIGINAL_TURN_MAX_DURATION_MS === undefined) {
+    delete process.env.DISCORD_TURN_MAX_DURATION_MS;
+  } else {
+    process.env.DISCORD_TURN_MAX_DURATION_MS = ORIGINAL_TURN_MAX_DURATION_MS;
   }
 });
 
@@ -221,5 +227,106 @@ describe("turnRunner restart/reconnect integration", () => {
     expect(finalizeCalls.length).toBe(1);
     expect(finalizeCalls[0]?.threadId).toBe("thread-1");
     expect(String(finalizeCalls[0]?.error ?? "")).toContain("Reconnecting");
+  });
+
+  test("aborts stuck turn when max duration is exceeded", async () => {
+    process.env.DISCORD_TURN_MAX_DURATION_MS = "1200";
+    const deps = createDeps();
+    const finalizeCalls: Array<{ threadId: string; error: string | null }> = [];
+
+    const codex = {
+      async request(method: string) {
+        if (method === "thread/start") {
+          return { thread: { id: "thread-1" } };
+        }
+        if (method === "turn/start") {
+          return {};
+        }
+        return {};
+      }
+    };
+
+    const runner = createTurnRunner({
+      queues: deps.queues,
+      activeTurns: deps.activeTurns,
+      state: deps.state,
+      codex,
+      config: {
+        defaultModel: "gpt-5.3-codex",
+        defaultEffort: "medium",
+        approvalPolicy: "never",
+        sandboxMode: "workspace-write"
+      },
+      safeReply: deps.safeReply,
+      buildSandboxPolicyForTurn: async () => null,
+      isThreadNotFoundError: () => false,
+      finalizeTurn: createFinalizeTurn(deps.activeTurns, finalizeCalls),
+      onTurnReconnectPending: () => {},
+      onActiveTurnsChanged: () => {}
+    });
+
+    runner.enqueuePrompt("channel-1", {
+      message: { channelId: "channel-1" },
+      setup: { cwd: "/tmp/repo", model: "gpt-5.3-codex" },
+      inputItems: [{ type: "text", text: "timeout test" }]
+    });
+
+    const queueSettled = await waitUntil(() => !runner.getQueue("channel-1").running, 4000, 20);
+    expect(queueSettled).toBe(true);
+    const finalized = await waitUntil(() => finalizeCalls.length === 1, 1200, 20);
+    expect(finalized).toBe(true);
+    expect(finalizeCalls.length).toBe(1);
+    expect(finalizeCalls[0]?.threadId).toBe("thread-1");
+    expect(String(finalizeCalls[0]?.error ?? "")).toContain("Turn timed out");
+  });
+
+  test("logs rejected lifecycle callbacks without unhandled rejections", async () => {
+    const deps = createDeps();
+    const originalConsoleError = console.error;
+    const errorLog: string[] = [];
+    console.error = (...args) => {
+      errorLog.push(args.join(" "));
+    };
+
+    try {
+      const runner = createTurnRunner({
+        queues: deps.queues,
+        activeTurns: deps.activeTurns,
+        state: deps.state,
+        codex: { request: async () => ({}) },
+        config: {
+          defaultModel: "gpt-5.3-codex",
+          defaultEffort: "medium",
+          approvalPolicy: "never",
+          sandboxMode: "workspace-write"
+        },
+        safeReply: deps.safeReply,
+        buildSandboxPolicyForTurn: async () => null,
+        isThreadNotFoundError: () => false,
+        finalizeTurn: async () => {},
+        onActiveTurnsChanged: async () => {
+          throw new Error("change boom");
+        },
+        onTurnCreated: async () => {
+          throw new Error("created boom");
+        },
+        onTurnAborted: async () => {
+          throw new Error("aborted boom");
+        }
+      });
+
+      const message = await deps.safeReply({ channelId: "channel-1" }, "status");
+      const turn = runner.createActiveTurn("thread-1", "channel-1", message, "/tmp/repo");
+      turn.promise.catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      runner.abortActiveTurn("thread-1", new Error("stop"));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(errorLog.some((line) => line.includes("onActiveTurnsChanged failed for thread-1: change boom"))).toBe(true);
+      expect(errorLog.some((line) => line.includes("onTurnCreated failed for thread-1: created boom"))).toBe(true);
+      expect(errorLog.some((line) => line.includes("onTurnAborted failed for thread-1: aborted boom"))).toBe(true);
+    } finally {
+      console.error = originalConsoleError;
+    }
   });
 });

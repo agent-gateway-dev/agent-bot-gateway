@@ -7,6 +7,16 @@ import { parsePathListEnv } from "../utils/pathEnv.js";
 import { makeFeishuRouteId } from "../feishu/ids.js";
 import { normalizeFeishuTransport } from "../feishu/transport.js";
 
+function normalizeFeishuUnboundChatMode(rawMode) {
+  const normalized = String(rawMode ?? "")
+    .trim()
+    .toLowerCase();
+  if (["open", "1", "true", "all"].includes(normalized)) {
+    return "open";
+  }
+  return "strict";
+}
+
 export function loadRuntimeEnv() {
   const configPath = path.resolve(process.env.CHANNEL_CONFIG_PATH ?? "config/channels.json");
   const statePath = path.resolve(process.env.STATE_PATH ?? "data/state.json");
@@ -42,6 +52,7 @@ export function loadRuntimeEnv() {
       ? Math.floor(configuredAttachmentIssueLimit)
       : 1;
   const renderVerbosity = normalizeRenderVerbosity(process.env.DISCORD_RENDER_VERBOSITY);
+  const stripAnsiForDiscord = process.env.DISCORD_STRIP_ANSI_OUTPUT === "1";
   const heartbeatPath = path.resolve(process.env.DISCORD_HEARTBEAT_PATH ?? "data/bridge-heartbeat.json");
   const restartRequestPath = path.resolve(process.env.DISCORD_RESTART_REQUEST_PATH ?? "data/restart-request.json");
   const restartAckPath = path.resolve(process.env.DISCORD_RESTART_ACK_PATH ?? "data/restart-ack.json");
@@ -80,6 +91,8 @@ export function loadRuntimeEnv() {
   const feishuGeneralCwd = path.resolve(process.env.FEISHU_GENERAL_CWD ?? feishuGeneralDefaultCwd);
   const feishuGeneralRouteId = feishuGeneralChatId ? makeFeishuRouteId(feishuGeneralChatId) : "";
   const feishuRequireMentionInGroup = process.env.FEISHU_REQUIRE_MENTION_IN_GROUP !== "0";
+  const feishuUnboundChatMode = normalizeFeishuUnboundChatMode(process.env.FEISHU_UNBOUND_CHAT_MODE);
+  const feishuUnboundChatCwd = path.resolve(process.env.FEISHU_UNBOUND_CHAT_CWD ?? process.cwd());
 
   return {
     configPath,
@@ -102,6 +115,7 @@ export function loadRuntimeEnv() {
     attachmentItemTypes,
     attachmentIssueLimitPerTurn,
     renderVerbosity,
+    stripAnsiForDiscord,
     heartbeatPath,
     restartRequestPath,
     restartAckPath,
@@ -126,6 +140,8 @@ export function loadRuntimeEnv() {
     feishuGeneralChatId,
     feishuGeneralRouteId,
     feishuGeneralCwd,
-    feishuRequireMentionInGroup
+    feishuRequireMentionInGroup,
+    feishuUnboundChatMode,
+    feishuUnboundChatCwd
   };
 }

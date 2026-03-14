@@ -32,6 +32,8 @@ describe("turn recovery store", () => {
     await store.upsertTurnFromTracker({
       threadId: "thread-1",
       repoChannelId: "channel-1",
+      requestId: "req-1",
+      sourceMessageId: "msg-1",
       channel: { id: "channel-1" },
       statusMessageId: "status-1",
       cwd: "/tmp/repo",
@@ -43,10 +45,14 @@ describe("turn recovery store", () => {
     let raw = JSON.parse(await fs.readFile(recoveryPath, "utf8"));
     expect(raw.turns["thread-1"]).toBeTruthy();
     expect(raw.turns["thread-1"].repoChannelId).toBe("channel-1");
+    expect(raw.requests["req-1"]).toBeTruthy();
+    expect(raw.requests["req-1"].status).toBe("processing");
 
-    await store.removeTurn("thread-1");
+    await store.removeTurn("thread-1", { status: "done" });
     raw = JSON.parse(await fs.readFile(recoveryPath, "utf8"));
     expect(raw.turns["thread-1"]).toBeUndefined();
+    expect(raw.requests["req-1"].status).toBe("done");
+    expect(store.getRequestStatus("req-1")?.status).toBe("done");
   });
 
   test("reconciles pending checkpoints by editing existing status messages", async () => {
@@ -54,6 +60,7 @@ describe("turn recovery store", () => {
     await store.upsertTurnFromTracker({
       threadId: "thread-1",
       repoChannelId: "channel-1",
+      requestId: "req-2",
       channel: { id: "channel-1" },
       statusMessageId: "status-1",
       cwd: "/tmp/repo",
@@ -98,6 +105,55 @@ describe("turn recovery store", () => {
     expect(summary.resumedKnown).toBe(1);
     expect(editedMessages.length).toBe(1);
     expect(editedMessages[0]).toContain("Recovered after restart");
+    expect(editedMessages[0]).toContain("request_id");
     expect(Object.keys(store.snapshot().turns).length).toBe(0);
+    expect(store.getRequestStatus("req-2")?.status).toBe("recovery_pending");
+  });
+
+  test("marks recovered request status as unknown when thread listing fails", async () => {
+    const { store } = await makeStore();
+    await store.upsertTurnFromTracker({
+      threadId: "thread-1",
+      repoChannelId: "channel-1",
+      requestId: "req-unknown",
+      channel: { id: "channel-1" },
+      statusMessageId: "status-1",
+      cwd: "/tmp/repo",
+      lifecyclePhase: "running",
+      seenDelta: false,
+      fullText: ""
+    });
+
+    const editedMessages: string[] = [];
+    const channel = {
+      isTextBased: () => true,
+      messages: {
+        async fetch(messageId: string) {
+          return {
+            id: messageId,
+            async edit(content: string) {
+              editedMessages.push(content);
+              return this;
+            }
+          };
+        }
+      }
+    };
+
+    const summary = await store.reconcilePending({
+      fetchChannelByRouteId: async () => channel,
+      codex: {
+        async request() {
+          throw new Error("state db missing rollout path for thread thread-1");
+        }
+      },
+      safeSendToChannel: async () => null
+    });
+
+    expect(summary.reconciled).toBe(1);
+    expect(summary.resumedKnown).toBe(0);
+    expect(summary.missingThread).toBe(0);
+    expect(editedMessages[0]).toContain("could not be verified safely");
+    expect(store.getRequestStatus("req-unknown")?.status).toBe("unknown");
   });
 });

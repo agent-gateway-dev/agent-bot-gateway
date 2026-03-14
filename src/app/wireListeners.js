@@ -1,4 +1,13 @@
-import { isBenignCodexStderrLine } from "./runtimeUtils.js";
+import { isBenignCodexStderrLine, isMissingRolloutPathError } from "./runtimeUtils.js";
+
+function runDetached(label, action) {
+  void Promise.resolve()
+    .then(action)
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error ?? "unknown");
+      console.error(`${label}: ${message}`);
+    });
+}
 
 export function wireBridgeListeners({
   codex,
@@ -13,17 +22,18 @@ export function wireBridgeListeners({
     if (isBenignCodexStderrLine(line)) {
       return;
     }
+    if (isMissingRolloutPathError(line)) {
+      // 缺失 rollout path 不是致命错误，只记录警告
+      console.warn(`[codex] Ignoring missing rollout path error: ${line}`);
+      return;
+    }
     console.error(`[codex] ${line}`);
   });
   codex.on("notification", (event) => {
-    void handleNotification(event).catch((error) => {
-      console.error(`notification handler failed (${event?.method ?? "unknown"}): ${error.message}`);
-    });
+    runDetached(`notification handler failed for ${event?.method ?? "unknown"}`, () => handleNotification(event));
   });
   codex.on("serverRequest", (request) => {
-    void handleServerRequest(request).catch((error) => {
-      console.error(`server request handler failed (${request?.method ?? "unknown"}): ${error.message}`);
-    });
+    runDetached(`serverRequest handler failed for ${request?.method ?? "unknown"}`, () => handleServerRequest(request));
   });
   codex.on("exit", ({ code, signal }) => {
     console.error(`codex app-server exited (code=${code}, signal=${signal ?? "none"})`);
@@ -43,18 +53,12 @@ export function wireBridgeListeners({
   });
 
   discord.on("messageCreate", (message) => {
-    void handleMessage(message).catch((error) => {
-      console.error(`message handler failed in channel ${message.channelId}: ${error.message}`);
-    });
+    runDetached(`message handler failed in channel ${message.channelId}`, () => handleMessage(message));
   });
   discord.on("channelCreate", (channel) => {
-    void handleChannelCreate(channel).catch((error) => {
-      console.error(`channelCreate handler failed for ${channel?.id ?? "unknown"}: ${error.message}`);
-    });
+    runDetached(`channelCreate handler failed for ${channel?.id ?? "unknown"}`, () => handleChannelCreate(channel));
   });
   discord.on("interactionCreate", (interaction) => {
-    void handleInteraction(interaction).catch((error) => {
-      console.error(`interaction handler failed: ${error.message}`);
-    });
+    runDetached("interaction handler failed", () => handleInteraction(interaction));
   });
 }

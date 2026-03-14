@@ -29,7 +29,10 @@ export function buildNotificationRuntime(deps) {
     debugLog,
     writeHeartbeatFile: runtimeAdapters.writeHeartbeatFile,
     onTurnFinalized: async (tracker) => {
-      await turnRecoveryStore.removeTurn(tracker?.threadId);
+      await turnRecoveryStore.removeTurn(tracker?.threadId, {
+        status: tracker?.failed ? "failed" : "done",
+        errorMessage: tracker?.failed ? tracker?.failureMessage ?? null : null
+      });
     }
   });
 }

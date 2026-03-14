@@ -23,13 +23,20 @@ export function createRuntimeOps(deps) {
 
   let heartbeatTimer = null;
   let restartAckHandled = false;
+  let restartRequestHandled = false;
+  const selfRestartOnRequestRaw = String(process.env.DISCORD_SELF_RESTART_ON_REQUEST ?? "").trim();
+  const selfRestartOnRequest = selfRestartOnRequestRaw
+    ? selfRestartOnRequestRaw !== "0"
+    : !exitOnRestartAck;
 
   function startHeartbeatLoop() {
     void writeHeartbeatFile();
     void maybeHandleRestartAckSignal();
+    void maybeHandleRestartRequestSignal();
     heartbeatTimer = setInterval(() => {
       void writeHeartbeatFile();
       void maybeHandleRestartAckSignal();
+      void maybeHandleRestartRequestSignal();
     }, heartbeatIntervalMs);
     if (typeof heartbeatTimer?.unref === "function") {
       heartbeatTimer.unref();
@@ -81,6 +88,51 @@ export function createRuntimeOps(deps) {
       console.log(`restart ack detected at ${restartAckPath}; exiting for host-managed restart`);
       await shutdown(0);
     } catch {}
+  }
+
+  async function maybeHandleRestartRequestSignal() {
+    if (!selfRestartOnRequest || restartRequestHandled) {
+      return;
+    }
+
+    let parsed;
+    try {
+      const raw = await fs.readFile(restartRequestPath, "utf8");
+      parsed = JSON.parse(raw);
+    } catch {
+      return;
+    }
+
+    const requestedAt = typeof parsed?.requestedAt === "string" ? parsed.requestedAt : "";
+    if (!requestedAt) {
+      return;
+    }
+    if (new Date(requestedAt).getTime() <= new Date(processStartedAt).getTime()) {
+      return;
+    }
+
+    restartRequestHandled = true;
+    console.log(`restart request detected at ${restartRequestPath}; exiting for launchd/self-managed restart`);
+
+    await fs.mkdir(path.dirname(restartAckPath), { recursive: true }).catch(() => {});
+    await fs
+      .writeFile(
+        restartAckPath,
+        JSON.stringify(
+          {
+            acknowledgedAt: new Date().toISOString(),
+            handledBy: "bridge-self",
+            requestSource: typeof parsed?.requestedBy === "string" ? parsed.requestedBy : null,
+            requestPid: Number.isFinite(Number(parsed?.pid)) ? Number(parsed.pid) : null
+          },
+          null,
+          2
+        ),
+        "utf8"
+      )
+      .catch(() => {});
+    await fs.unlink(restartRequestPath).catch(() => {});
+    await shutdown(0);
   }
 
   async function requestSelfRestartFromDiscord(message, reason) {
@@ -155,6 +207,7 @@ export function createRuntimeOps(deps) {
     stopHeartbeatLoop,
     writeHeartbeatFile,
     maybeHandleRestartAckSignal,
+    maybeHandleRestartRequestSignal,
     requestSelfRestartFromDiscord,
     maybeCompletePendingRestartNotice,
     shouldHandleAsSelfRestartRequest

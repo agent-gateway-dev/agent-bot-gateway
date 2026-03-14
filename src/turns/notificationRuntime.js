@@ -1,4 +1,5 @@
 import { collectLikelyLocalPathsFromText, extractAttachmentCandidates } from "../attachments/service.js";
+import { isMissingRolloutPathError } from "../app/runtimeUtils.js";
 
 export function createNotificationRuntime(deps) {
   const {
@@ -18,9 +19,11 @@ export function createNotificationRuntime(deps) {
     safeSendToChannel,
     truncateForDiscordMessage,
     discordMaxMessageLength,
+    feishuStreamMinChars = 80,
     debugLog,
     writeHeartbeatFile,
     onTurnFinalized,
+    splitTextForMessages = splitTextForMessagesFallback,
     turnCompletionQuietMs = 3000,
     turnCompletionMaxWaitMs = 12000,
     reconnectSettleQuietMs = 5000
@@ -133,14 +136,23 @@ export function createNotificationRuntime(deps) {
       const threadId = normalized.threadId;
       const message = normalized.errorMessage;
       if (threadId) {
-      const tracker = activeTurns.get(threadId);
-      if (tracker && isTransientReconnectErrorMessage(message)) {
+        const tracker = activeTurns.get(threadId);
+        if (tracker && isTransientReconnectErrorMessage(message)) {
           noteReconnectObserved(tracker);
           markTurnReconnecting(tracker, "🔄 Temporary reconnect while processing. Continuing automatically while connection recovers...");
           debugLog("transport", "transient reconnect while turn active", {
             threadId,
             turnId: threadId,
             discordMessageId: tracker.statusMessageId ?? null,
+            message: truncateStatusText(String(message ?? ""), 200)
+          });
+          return;
+        }
+        if (isMissingRolloutPathError(message)) {
+          debugLog("transport", "ignoring missing rollout path error", {
+            threadId,
+            turnId: threadId,
+            discordMessageId: tracker?.statusMessageId ?? null,
             message: truncateStatusText(String(message ?? ""), 200)
           });
           return;
@@ -168,15 +180,22 @@ export function createNotificationRuntime(deps) {
       return;
     }
     const elapsed = Date.now() - tracker.lastFlushAt;
-    const delay = Math.max(0, 1200 - elapsed);
+    const delay = Math.max(0, 800 - elapsed);
     tracker.flushTimer = setTimeout(() => {
       tracker.flushTimer = null;
-      void flushTrackerParagraphs(tracker, { force: false });
+      void flushTrackerParagraphs(tracker, { force: false }).catch((error) => {
+        console.error(`tracker flush failed for ${tracker?.threadId ?? "unknown"}: ${formatErrorMessage(error)}`);
+      });
     }, delay);
   }
 
   async function flushTrackerParagraphs(tracker, { force }) {
     if (!force && !activeTurns.has(tracker.threadId)) {
+      return;
+    }
+    if (canSegmentStreamTrackerOutput(tracker)) {
+      await flushFeishuStreamSegments(tracker, { force });
+      tracker.lastFlushAt = Date.now();
       return;
     }
     const content = buildTrackerMessageContent(tracker);
@@ -198,6 +217,8 @@ export function createNotificationRuntime(deps) {
     tracker.finalizing = true;
     clearTurnFinalizeTimer(tracker);
     tracker.turnCompletionRequested = false;
+    let finalError = error ? toError(error) : null;
+    let resolvedText = null;
 
     if (tracker.flushTimer) {
       clearTimeout(tracker.flushTimer);
@@ -206,21 +227,22 @@ export function createNotificationRuntime(deps) {
 
     try {
       clearThinkingTicker(tracker);
-      if (error) {
+      if (finalError) {
         tracker.failed = true;
         tracker.completed = true;
-        tracker.failureMessage = error.message;
+        tracker.failureMessage = finalError.message;
         transitionTurnPhase(tracker, TURN_PHASE.FAILED);
-        if (isTransientReconnectErrorMessage(error.message)) {
+        if (isTransientReconnectErrorMessage(finalError.message)) {
           pushStatusLine(
             tracker,
             "🔄 Temporary reconnect while processing did not recover in time. Please retry."
           );
         } else {
-          pushStatusLine(tracker, `❌ Error: ${truncateStatusText(error.message, 220)}`);
+          pushStatusLine(tracker, `❌ Error: ${truncateStatusText(finalError.message, 220)}`);
         }
-        await safeSendToChannel(tracker.channel, `❌ Error: ${truncateStatusText(error.message, 220)}`);
-        tracker.reject(error);
+        await safeSendToChannel(tracker.channel, `❌ Error: ${truncateStatusText(finalError.message, 220)}`).catch((sendError) => {
+          console.error(`failed to send turn error for ${threadId}: ${formatErrorMessage(sendError)}`);
+        });
         return;
       }
 
@@ -249,7 +271,7 @@ export function createNotificationRuntime(deps) {
         inferredSummaryPaths: inferredSummaryPaths.slice(0, 8)
       });
       if (summaryTextForDiscord) {
-        await sendChunkedToChannel(tracker.channel, summaryTextForDiscord);
+        await sendFinalSummary(tracker, summaryTextForDiscord);
       }
       const sentImages = await maybeSendInferredAttachmentsFromText(tracker, attachmentHintText);
       tracker.hasSummaryImageAttachment = Number(sentImages) > 0;
@@ -263,14 +285,44 @@ export function createNotificationRuntime(deps) {
       if (diffBlock) {
         await sendChunkedToChannel(tracker.channel, diffBlock);
       }
-
-      tracker.resolve(tracker.fullText);
+      resolvedText = tracker.fullText;
+    } catch (caughtError) {
+      const normalizedError = toError(caughtError);
+      if (!finalError) {
+        finalError = normalizedError;
+        tracker.failed = true;
+        tracker.completed = true;
+        tracker.failureMessage = normalizedError.message;
+        transitionTurnPhase(tracker, TURN_PHASE.FAILED);
+        pushStatusLine(tracker, `❌ Error: ${truncateStatusText(normalizedError.message, 220)}`);
+        await safeSendToChannel(tracker.channel, `❌ Error: ${truncateStatusText(normalizedError.message, 220)}`).catch(
+          (sendError) => {
+            console.error(`failed to send turn error for ${threadId}: ${formatErrorMessage(sendError)}`);
+          }
+        );
+      }
+      console.error(`turn finalization failed for ${threadId}: ${formatErrorMessage(normalizedError)}`);
     } finally {
       clearWorkingTicker(tracker);
       clearThinkingTicker(tracker);
       activeTurns.delete(threadId);
-      await onTurnFinalized?.(tracker);
-      await writeHeartbeatFile();
+      if (finalError) {
+        settleTracker(tracker, "reject", finalError);
+      } else {
+        settleTracker(tracker, "resolve", resolvedText ?? tracker.fullText);
+      }
+      if (typeof onTurnFinalized === "function") {
+        try {
+          await onTurnFinalized(tracker);
+        } catch (finalizeError) {
+          console.error(`onTurnFinalized failed for ${threadId}: ${formatErrorMessage(finalizeError)}`);
+        }
+      }
+      try {
+        await writeHeartbeatFile();
+      } catch (heartbeatError) {
+        console.error(`failed to write heartbeat after turn ${threadId}: ${formatErrorMessage(heartbeatError)}`);
+      }
     }
   }
 
@@ -372,7 +424,9 @@ export function createNotificationRuntime(deps) {
     }
     clearTurnFinalizeTimer(tracker);
     tracker.turnFinalizeTimer = setTimeout(() => {
-      void maybeFinalizeTurnWhenSettled(threadId);
+      void maybeFinalizeTurnWhenSettled(threadId).catch((error) => {
+        console.error(`turn settlement check failed for ${threadId}: ${formatErrorMessage(error)}`);
+      });
     }, turnCompletionQuietMs);
     if (typeof tracker.turnFinalizeTimer?.unref === "function") {
       tracker.turnFinalizeTimer.unref();
@@ -446,9 +500,13 @@ export function createNotificationRuntime(deps) {
       pushStatusLine(tracker, payload);
       await editTrackerMessage(tracker, buildTrackerMessageContent(tracker));
     };
-    void tick();
+    void tick().catch((error) => {
+      console.error(`thinking ticker failed for ${tracker?.threadId ?? "unknown"}: ${formatErrorMessage(error)}`);
+    });
     tracker.thinkingTicker = setInterval(() => {
-      void tick();
+      void tick().catch((error) => {
+        console.error(`thinking ticker failed for ${tracker?.threadId ?? "unknown"}: ${formatErrorMessage(error)}`);
+      });
     }, 3000);
     if (typeof tracker.thinkingTicker?.unref === "function") {
       tracker.thinkingTicker.unref();
@@ -523,9 +581,13 @@ export function createNotificationRuntime(deps) {
       }
     };
 
-    void tick();
+    void tick().catch((error) => {
+      console.error(`working ticker failed for ${tracker?.threadId ?? "unknown"}: ${formatErrorMessage(error)}`);
+    });
     tracker.workingTicker = setInterval(() => {
-      void tick();
+      void tick().catch((error) => {
+        console.error(`working ticker failed for ${tracker?.threadId ?? "unknown"}: ${formatErrorMessage(error)}`);
+      });
     }, 3000);
     if (typeof tracker.workingTicker?.unref === "function") {
       tracker.workingTicker.unref();
@@ -565,6 +627,9 @@ export function createNotificationRuntime(deps) {
     if (fromDelta) {
       tracker.seenDelta = true;
     }
+    if (canStreamTrackerOutput(tracker)) {
+      scheduleFlush(tracker);
+    }
   }
 
   function pushStatusLine(tracker, line) {
@@ -582,7 +647,152 @@ export function createNotificationRuntime(deps) {
   }
 
   function buildTrackerMessageContent(tracker) {
+    if (canInlineStreamTrackerOutput(tracker)) {
+      const firstChunk = String(splitTextForMessages(tracker.fullText, discordMaxMessageLength)[0] ?? "").trim();
+      if (firstChunk) {
+        return firstChunk;
+      }
+    }
     return truncateForDiscordMessage(tracker.currentStatusLine || "⏳ Thinking...", discordMaxMessageLength);
+  }
+
+  async function sendFinalSummary(tracker, summaryTextForDiscord) {
+    const summaryChunks = splitTextForMessages(summaryTextForDiscord, discordMaxMessageLength);
+    if (summaryChunks.length === 0) {
+      return;
+    }
+    if (canSegmentStreamTrackerOutput(tracker)) {
+      await sendFeishuFinalSummary(tracker, summaryTextForDiscord);
+      return;
+    }
+    if (!canInlineStreamTrackerOutput(tracker)) {
+      await sendChunkedToChannel(tracker.channel, summaryTextForDiscord);
+      return;
+    }
+
+    await editTrackerMessage(tracker, summaryChunks[0]);
+    const remaining = summaryChunks.slice(1).join("");
+    if (remaining) {
+      await sendChunkedToChannel(tracker.channel, remaining);
+    }
+  }
+
+  function canStreamTrackerOutput(tracker) {
+    if (!tracker?.channel) {
+      return false;
+    }
+    if (tracker.seenDelta !== true) {
+      return false;
+    }
+    return typeof tracker.fullText === "string" && tracker.fullText.trim().length > 0;
+  }
+
+  function canInlineStreamTrackerOutput(tracker) {
+    return canStreamTrackerOutput(tracker) && !isFeishuTracker(tracker) && Boolean(tracker?.statusMessageId);
+  }
+
+  function canSegmentStreamTrackerOutput(tracker) {
+    return canStreamTrackerOutput(tracker) && isFeishuTracker(tracker);
+  }
+
+  function isFeishuTracker(tracker) {
+    const platform = String(tracker?.channel?.platform ?? tracker?.statusMessage?.platform ?? "")
+      .trim()
+      .toLowerCase();
+    return platform === "feishu";
+  }
+
+  async function flushFeishuStreamSegments(tracker, { force }) {
+    ensureFeishuStreamState(tracker);
+    const pendingText = String(tracker.fullText ?? "").slice(tracker.streamedTextOffset);
+    if (!pendingText) {
+      return;
+    }
+
+    const chunks = splitTextForMessages(pendingText, discordMaxMessageLength).filter((chunk) => typeof chunk === "string" && chunk.length > 0);
+    if (chunks.length === 0) {
+      return;
+    }
+
+    const readyChunks = [];
+    if (force) {
+      readyChunks.push(...chunks);
+    } else if (chunks.length === 1) {
+      if (shouldSendFeishuStreamTail(chunks[0])) {
+        readyChunks.push(chunks[0]);
+      }
+    } else {
+      readyChunks.push(...chunks.slice(0, -1));
+      const tail = chunks[chunks.length - 1];
+      if (shouldSendFeishuStreamTail(tail)) {
+        readyChunks.push(tail);
+      }
+    }
+
+    for (const chunk of readyChunks) {
+      const payload = String(chunk ?? "");
+      if (!payload.trim()) {
+        tracker.streamedTextOffset += payload.length;
+        tracker.streamedSummaryText += payload;
+        continue;
+      }
+      const sentMessage = await safeSendToChannel(tracker.channel, payload);
+      if (!sentMessage) {
+        debugLog("render", "feishu stream segment deferred", {
+          threadId: tracker.threadId,
+          turnId: tracker.threadId,
+          segmentLength: payload.length,
+          streamedTextOffset: tracker.streamedTextOffset
+        });
+        break;
+      }
+      tracker.streamedTextOffset += payload.length;
+      tracker.streamedSummaryText += payload;
+      debugLog("render", "sent feishu stream segment", {
+        threadId: tracker.threadId,
+        turnId: tracker.threadId,
+        segmentLength: payload.length,
+        streamedTextOffset: tracker.streamedTextOffset
+      });
+    }
+  }
+
+  function shouldSendFeishuStreamTail(text) {
+    const normalized = String(text ?? "").replace(/\s+$/u, "");
+    if (!normalized.trim()) {
+      return false;
+    }
+    if (normalized.length >= feishuStreamMinChars) {
+      return true;
+    }
+    return /(?:\r?\n|[。！？.!?])$/u.test(normalized);
+  }
+
+  function ensureFeishuStreamState(tracker) {
+    if (!tracker || typeof tracker !== "object") {
+      return;
+    }
+    if (!Number.isFinite(tracker.streamedTextOffset) || tracker.streamedTextOffset < 0) {
+      tracker.streamedTextOffset = 0;
+    }
+    if (typeof tracker.streamedSummaryText !== "string") {
+      tracker.streamedSummaryText = "";
+    }
+  }
+
+  async function sendFeishuFinalSummary(tracker, summaryTextForDiscord) {
+    ensureFeishuStreamState(tracker);
+    let remaining = summaryTextForDiscord;
+    if (tracker.streamedSummaryText && summaryTextForDiscord.startsWith(tracker.streamedSummaryText)) {
+      remaining = summaryTextForDiscord.slice(tracker.streamedSummaryText.length);
+    } else if (tracker.streamedTextOffset > 0) {
+      remaining = summaryTextForDiscord.slice(Math.min(summaryTextForDiscord.length, tracker.streamedTextOffset));
+    }
+    if (!remaining.trim()) {
+      return;
+    }
+    await sendChunkedToChannel(tracker.channel, remaining);
+    tracker.streamedSummaryText = summaryTextForDiscord;
   }
 
   function summarizeForDebug(text, max = 180) {
@@ -687,4 +897,46 @@ export function createNotificationRuntime(deps) {
     finalizeTurn,
     onTurnReconnectPending
   };
+}
+
+function splitTextForMessagesFallback(text, limit = 1900) {
+  const normalized = typeof text === "string" ? text : String(text ?? "");
+  if (!normalized) {
+    return [];
+  }
+  if (normalized.length <= limit) {
+    return [normalized];
+  }
+  const chunks = [];
+  for (let offset = 0; offset < normalized.length; offset += limit) {
+    chunks.push(normalized.slice(offset, offset + limit));
+  }
+  return chunks;
+}
+
+function settleTracker(tracker, action, value) {
+  if (!tracker || tracker.promiseSettled) {
+    return;
+  }
+  tracker.promiseSettled = true;
+  const settle = action === "reject" ? tracker.reject : tracker.resolve;
+  if (typeof settle !== "function") {
+    return;
+  }
+  try {
+    settle(value);
+  } catch (error) {
+    console.error(`turn ${action} callback failed for ${tracker?.threadId ?? "unknown"}: ${formatErrorMessage(error)}`);
+  }
+}
+
+function toError(error) {
+  if (error instanceof Error) {
+    return error;
+  }
+  return new Error(formatErrorMessage(error));
+}
+
+function formatErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error ?? "unknown");
 }
