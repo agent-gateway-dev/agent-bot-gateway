@@ -5,12 +5,12 @@ node_modules/
 .env.*
 !.env.example
 
+# PM2 / ecosystem config (local-specific paths)
+ecosystem.config.cjs
+
 # Local runtime state
-data/state.json
-data/restart-request.json
-data/bridge-heartbeat.json
-data/restart-ack.json
-data/inflight-turns.json
+data/
+logs/
 config/channels.json
 *.log
 com.codex.discord.bridge.plist

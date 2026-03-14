@@ -2,16 +2,16 @@ module.exports = {
   apps: [{
     name: 'codex-discord-bridge',
     script: 'scripts/start-with-proxy.mjs',
-    interpreter: '/Users/aias/.nvm/versions/node/v22.22.0/bin/node',
-    cwd: '/Users/aias/.openclaw/ai-bot-gateway',
+    interpreter: 'node',  // 修改为你的 Node.js 路径，如 '/Users/username/.nvm/versions/node/v22.22.0/bin/node'
+    cwd: '/path/to/ai-bot-gateway',  // 修改为项目路径
     instances: 1,
     autorestart: true,
     watch: false,
     max_memory_restart: '1G',
     env: {
       NODE_ENV: 'production',
-      FEISHU_UNBOUND_CHAT_MODE: 'open',
-      FEISHU_UNBOUND_CHAT_CWD: '/Users/aias/.openclaw/workspace'
+      FEISHU_UNBOUND_CHAT_MODE: 'open',  // 'open' | 'strict'
+      FEISHU_UNBOUND_CHAT_CWD: '/path/to/workspace'  // 飞书聊天工作目录
     },
     error_file: '/tmp/codex-discord-bridge.pm2.err.log',
     out_file: '/tmp/codex-discord-bridge.pm2.out.log',
