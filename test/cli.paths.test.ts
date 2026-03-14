@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +7,11 @@ import { resolveCliRuntimePaths } from "../src/cli/paths.js";
 const tempDirs: string[] = [];
 const originalStdout = process.env.DISCORD_STDOUT_LOG_PATH;
 const originalStderr = process.env.DISCORD_STDERR_LOG_PATH;
+
+beforeEach(() => {
+  delete process.env.DISCORD_STDOUT_LOG_PATH;
+  delete process.env.DISCORD_STDERR_LOG_PATH;
+});
 
 afterEach(async () => {
   process.env.DISCORD_STDOUT_LOG_PATH = originalStdout;

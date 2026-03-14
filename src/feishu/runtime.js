@@ -5,6 +5,8 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 import { makeFeishuRouteId, parseFeishuRouteId } from "./ids.js";
 import { resolveFeishuContext } from "./context.js";
 import { isFeishuLongConnectionTransport, isFeishuWebhookTransport, normalizeFeishuTransport } from "./transport.js";
+import { buildTurnRequestId } from "../turns/requestId.js";
+import { stripAnsi } from "../utils/stripAnsi.js";
 
 export function createFeishuRuntime(deps) {
   const {
@@ -30,7 +32,9 @@ export function createFeishuRuntime(deps) {
     imageCacheDir,
     feishuGeneralChatId,
     feishuGeneralCwd,
-    feishuRequireMentionInGroup
+    feishuRequireMentionInGroup,
+    feishuUnboundChatMode,
+    feishuUnboundChatCwd
   } = runtimeEnv;
 
   const seenEventIds = new Map();
@@ -161,14 +165,7 @@ export function createFeishuRuntime(deps) {
     }
 
     if (normalizedCommand === "!where") {
-      const context = resolveFeishuContext(inboundMessage, {
-        channelSetups: getChannelSetups(),
-        config,
-        generalChat: {
-          id: feishuGeneralChatId,
-          cwd: feishuGeneralCwd
-        }
-      });
+      const context = resolveFeishuContext(inboundMessage, buildFeishuContextOptions());
       await safeReply(inboundMessage, buildFeishuWhereText({ inboundMessage, senderOpenId, context }));
       return;
     }
@@ -204,14 +201,7 @@ export function createFeishuRuntime(deps) {
       return;
     }
 
-    const context = resolveFeishuContext(inboundMessage, {
-      channelSetups: getChannelSetups(),
-      config,
-      generalChat: {
-        id: feishuGeneralChatId,
-        cwd: feishuGeneralCwd
-      }
-    });
+    const context = resolveFeishuContext(inboundMessage, buildFeishuContextOptions());
     if (!context) {
       await safeReply(
         inboundMessage,
@@ -240,7 +230,13 @@ export function createFeishuRuntime(deps) {
       inputItems,
       message: inboundMessage,
       setup: context.setup,
-      repoChannelId: context.repoChannelId
+      repoChannelId: context.repoChannelId,
+      platform: "feishu",
+      requestId: buildTurnRequestId({
+        platform: "feishu",
+        routeId: context.repoChannelId,
+        messageId: inboundMessage.id
+      })
     });
   }
 
@@ -278,7 +274,13 @@ export function createFeishuRuntime(deps) {
       inputItems,
       message: inboundMessage,
       setup: context.setup,
-      repoChannelId: context.repoChannelId
+      repoChannelId: context.repoChannelId,
+      platform: "feishu",
+      requestId: buildTurnRequestId({
+        platform: "feishu",
+        routeId: context.repoChannelId,
+        messageId: inboundMessage.id
+      })
     });
   }
 
@@ -401,7 +403,7 @@ export function createFeishuRuntime(deps) {
   }
 
   async function sendTextMessage({ chatId, text, replyToMessageId }) {
-    const normalizedText = String(text ?? "").trim();
+    const normalizedText = stripAnsi(String(text ?? "")).trim();
     if (!normalizedText) {
       return null;
     }
@@ -727,14 +729,22 @@ export function createFeishuRuntime(deps) {
   };
 
   function resolveInboundContext(inboundMessage) {
-    return resolveFeishuContext(inboundMessage, {
+    return resolveFeishuContext(inboundMessage, buildFeishuContextOptions());
+  }
+
+  function buildFeishuContextOptions() {
+    return {
       channelSetups: getChannelSetups(),
       config,
       generalChat: {
         id: feishuGeneralChatId,
         cwd: feishuGeneralCwd
+      },
+      unboundChat: {
+        mode: feishuUnboundChatMode,
+        cwd: feishuUnboundChatCwd
       }
-    });
+    };
   }
 
   async function replyWithUnboundChatMessage(inboundMessage, senderOpenId) {

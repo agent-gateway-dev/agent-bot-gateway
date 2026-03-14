@@ -22,7 +22,10 @@ export function createTurnRunner(deps) {
     const queue = getQueue(repoChannelId);
     queue.jobs.push(job);
     if (!queue.running) {
-      void processQueue(repoChannelId);
+      void processQueue(repoChannelId).catch((error) => {
+        queue.running = false;
+        console.error(`queue processing failed for ${repoChannelId}: ${formatErrorMessage(error)}`);
+      });
     }
   }
 
@@ -50,6 +53,11 @@ export function createTurnRunner(deps) {
       const settleTimeoutMs = Number.isFinite(Number(process.env.DISCORD_TURN_SETTLE_TIMEOUT_MS))
         ? Math.max(500, Math.floor(Number(process.env.DISCORD_TURN_SETTLE_TIMEOUT_MS)))
         : 120_000;
+      const configuredTurnMaxDurationMs = Number(process.env.DISCORD_TURN_MAX_DURATION_MS ?? "");
+      const turnMaxDurationMs =
+        Number.isFinite(configuredTurnMaxDurationMs) && configuredTurnMaxDurationMs > 0
+          ? Math.max(1_000, Math.floor(configuredTurnMaxDurationMs))
+          : null;
       try {
         let threadId = await ensureThreadId(repoChannelId, job.setup);
         startedThreadId = threadId;
@@ -68,7 +76,10 @@ export function createTurnRunner(deps) {
         const runTurn = async (targetThreadId) => {
           startedThreadId = targetThreadId;
           const turn = createActiveTurn(targetThreadId, repoChannelId, statusMessage, job.setup.cwd, {
-            allowFileWrites: job.setup.allowFileWrites !== false
+            allowFileWrites: job.setup.allowFileWrites !== false,
+            requestId: job.requestId,
+            sourceMessageId: job?.message?.id ?? null,
+            platform: job.platform
           });
           turnPromise = turn.promise;
 
@@ -90,7 +101,29 @@ export function createTurnRunner(deps) {
           }
 
           await requestCodexWithReconnectRetry(() => codex.request("turn/start", turnParams));
-          await turn.promise;
+          if (!turnMaxDurationMs) {
+            await turn.promise;
+            return;
+          }
+
+          const completion = await Promise.race([
+            turn.promise.then(
+              () => ({ type: "resolved" }),
+              (error) => ({ type: "rejected", error })
+            ),
+            delay(turnMaxDurationMs).then(() => ({ type: "timeout" }))
+          ]);
+          if (completion.type === "resolved") {
+            return;
+          }
+          if (completion.type === "rejected") {
+            throw completion.error;
+          }
+
+          const timeoutError = new Error(
+            `Turn timed out after ${turnMaxDurationMs}ms. Interrupt the route or retry with a shorter prompt.`
+          );
+          throw timeoutError;
         };
 
         let reconnectRetryCount = 0;
@@ -260,6 +293,7 @@ export function createTurnRunner(deps) {
 
     let resolveTurn;
     let rejectTurn;
+    let promiseSettled = false;
     const promise = new Promise((resolve, reject) => {
       resolveTurn = resolve;
       rejectTurn = reject;
@@ -274,6 +308,9 @@ export function createTurnRunner(deps) {
       cwd: typeof cwd === "string" && cwd ? cwd : null,
       lifecyclePhase: TURN_PHASE.RUNNING,
       allowFileWrites: options.allowFileWrites !== false,
+      requestId: typeof options.requestId === "string" && options.requestId ? options.requestId : null,
+      sourceMessageId: typeof options.sourceMessageId === "string" && options.sourceMessageId ? options.sourceMessageId : null,
+      platform: typeof options.platform === "string" && options.platform ? options.platform : null,
       sentAttachmentKeys: new Set(),
       seenAttachmentIssueKeys: new Set(),
       attachmentIssueCount: 0,
@@ -305,11 +342,23 @@ export function createTurnRunner(deps) {
       activeLifecycleItemKeys: new Set(),
       completedLifecycleItemKeys: new Set(),
       finalizing: false,
-      resolve: resolveTurn,
-      reject: rejectTurn
+      resolve(value) {
+        if (promiseSettled) {
+          return;
+        }
+        promiseSettled = true;
+        resolveTurn(value);
+      },
+      reject(reason) {
+        if (promiseSettled) {
+          return;
+        }
+        promiseSettled = true;
+        rejectTurn(reason);
+      }
     });
-    void onActiveTurnsChanged?.();
-    void onTurnCreated?.(activeTurns.get(threadId));
+    runDetachedCallback(`onActiveTurnsChanged failed for ${threadId}`, () => onActiveTurnsChanged?.());
+    runDetachedCallback(`onTurnCreated failed for ${threadId}`, () => onTurnCreated?.(activeTurns.get(threadId)));
 
     return { promise };
   }
@@ -338,9 +387,10 @@ export function createTurnRunner(deps) {
     }
 
     activeTurns.delete(threadId);
-    void onActiveTurnsChanged?.();
+    runDetachedCallback(`onActiveTurnsChanged failed for ${threadId}`, () => onActiveTurnsChanged?.());
     tracker.lifecyclePhase = TURN_PHASE.CANCELLED;
-    void onTurnAborted?.(threadId, tracker);
+    tracker.failureMessage = String(error?.message ?? tracker.failureMessage ?? "Turn aborted");
+    runDetachedCallback(`onTurnAborted failed for ${threadId}`, () => onTurnAborted?.(threadId, tracker));
     tracker.reject(error ?? new Error("Turn aborted"));
   }
 
@@ -362,6 +412,18 @@ export function createTurnRunner(deps) {
     abortActiveTurn,
     findActiveTurnByRepoChannel
   };
+}
+
+function runDetachedCallback(label, callback) {
+  void Promise.resolve()
+    .then(callback)
+    .catch((error) => {
+      console.error(`${label}: ${formatErrorMessage(error)}`);
+    });
+}
+
+function formatErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error ?? "unknown");
 }
 
 function isTransientReconnectError(message) {

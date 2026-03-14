@@ -19,6 +19,7 @@ const ENV_KEYS = [
   "DISCORD_ATTACHMENT_ITEM_TYPES",
   "DISCORD_MAX_ATTACHMENT_ISSUES_PER_TURN",
   "DISCORD_RENDER_VERBOSITY",
+  "DISCORD_STRIP_ANSI_OUTPUT",
   "DISCORD_HEARTBEAT_PATH",
   "DISCORD_RESTART_REQUEST_PATH",
   "DISCORD_RESTART_ACK_PATH",
@@ -29,7 +30,9 @@ const ENV_KEYS = [
   "DISCORD_DEBUG_LOGGING",
   "DISCORD_PROJECTS_CATEGORY_NAME",
   "DISCORD_LEGACY_CATEGORY_NAME",
-  "CODEX_EXTRA_WRITABLE_ROOTS"
+  "CODEX_EXTRA_WRITABLE_ROOTS",
+  "FEISHU_UNBOUND_CHAT_MODE",
+  "FEISHU_UNBOUND_CHAT_CWD"
 ] as const;
 
 const ORIGINAL_ENV = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -61,6 +64,7 @@ describe("runtime env", () => {
     process.env.DISCORD_ATTACHMENT_ITEM_TYPES = "imageView,commandExecution";
     process.env.DISCORD_MAX_ATTACHMENT_ISSUES_PER_TURN = "2";
     process.env.DISCORD_RENDER_VERBOSITY = "ops";
+    process.env.DISCORD_STRIP_ANSI_OUTPUT = "1";
     process.env.DISCORD_HEARTBEAT_INTERVAL_MS = "15000";
     process.env.DISCORD_DEBUG_LOGGING = "1";
     process.env.DISCORD_PROJECTS_CATEGORY_NAME = "custom-projects";
@@ -81,6 +85,7 @@ describe("runtime env", () => {
     expect([...env.attachmentItemTypes]).toEqual(["imageView", "commandExecution"]);
     expect(env.attachmentIssueLimitPerTurn).toBe(2);
     expect(env.renderVerbosity).toBe("ops");
+    expect(env.stripAnsiForDiscord).toBe(true);
     expect(env.heartbeatIntervalMs).toBe(15000);
     expect(env.debugLoggingEnabled).toBe(true);
     expect(env.projectsCategoryName).toBe("custom-projects");
@@ -99,5 +104,15 @@ describe("runtime env", () => {
     expect(env.attachmentMaxBytes).toBe(8 * 1024 * 1024);
     expect(env.attachmentIssueLimitPerTurn).toBe(1);
     expect(env.heartbeatIntervalMs).toBe(30000);
+  });
+
+  test("normalizes Feishu unbound chat mode and cwd", () => {
+    process.env.FEISHU_UNBOUND_CHAT_MODE = "all";
+    process.env.FEISHU_UNBOUND_CHAT_CWD = "/tmp/feishu-open";
+
+    const env = loadRuntimeEnv();
+
+    expect(env.feishuUnboundChatMode).toBe("open");
+    expect(env.feishuUnboundChatCwd).toBe("/tmp/feishu-open");
   });
 });

@@ -1,7 +1,7 @@
 import { makeFeishuRouteId } from "./ids.js";
 
 export function resolveFeishuContext(message, options) {
-  const { channelSetups, config, generalChat } = options;
+  const { channelSetups, config, generalChat, unboundChat } = options;
   const routeId = String(message?.channelId ?? "").trim();
   if (!routeId) {
     return null;
@@ -20,18 +20,31 @@ export function resolveFeishuContext(message, options) {
     };
   }
 
-  if (!isFeishuGeneralChat(message, generalChat)) {
+  if (isFeishuGeneralChat(message, generalChat)) {
+    return {
+      repoChannelId: routeId,
+      setup: {
+        cwd: generalChat.cwd,
+        model: config.defaultModel,
+        mode: "general",
+        sandboxMode: "read-only",
+        allowFileWrites: false
+      }
+    };
+  }
+
+  if (String(unboundChat?.mode ?? "").trim().toLowerCase() !== "open") {
     return null;
   }
 
   return {
     repoChannelId: routeId,
     setup: {
-      cwd: generalChat.cwd,
+      cwd: unboundChat?.cwd,
       model: config.defaultModel,
-      mode: "general",
-      sandboxMode: "read-only",
-      allowFileWrites: false
+      mode: "repo",
+      sandboxMode: config.sandboxMode,
+      allowFileWrites: true
     }
   };
 }

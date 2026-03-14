@@ -69,4 +69,39 @@ describe("feishu context", () => {
       }
     });
   });
+
+  test("resolves unbound chat as writable context when unbound mode is open", () => {
+    const routeId = makeFeishuRouteId("oc_unbound");
+    const context = resolveFeishuContext(
+      {
+        channelId: routeId
+      },
+      {
+        channelSetups: {},
+        config: {
+          defaultModel: "gpt-5.3-codex",
+          sandboxMode: "workspace-write"
+        },
+        generalChat: {
+          id: "oc_general",
+          cwd: "/tmp/general"
+        },
+        unboundChat: {
+          mode: "open",
+          cwd: "/tmp/open-feishu"
+        }
+      }
+    );
+
+    expect(context).toEqual({
+      repoChannelId: routeId,
+      setup: {
+        cwd: "/tmp/open-feishu",
+        model: "gpt-5.3-codex",
+        mode: "repo",
+        sandboxMode: "workspace-write",
+        allowFileWrites: true
+      }
+    });
+  });
 });

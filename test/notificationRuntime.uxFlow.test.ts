@@ -662,4 +662,116 @@ describe("notification runtime ux flow cutover", () => {
     expect(chunkedMessages).toEqual(["I’ll check the existing"]);
     expect(activeTurns.has("thread-1")).toBe(false);
   });
+
+  test("ignores missing rollout path errors even when tracker is absent", async () => {
+    const runtime = createNotificationRuntime({
+      activeTurns: new Map(),
+      renderVerbosity: "user",
+      TURN_PHASE: {
+        RUNNING: "running",
+        RECONNECTING: "reconnecting",
+        FINALIZING: "finalizing",
+        FAILED: "failed",
+        DONE: "done"
+      },
+      transitionTurnPhase: () => true,
+      normalizeCodexNotification: (notification: CodexNotification) => ({
+        kind: "error",
+        threadId: notification.params.threadId,
+        errorMessage: "state db missing rollout path for thread thread-1"
+      }),
+      extractAgentMessageText: () => "",
+      maybeSendAttachmentsForItem: async () => {},
+      maybeSendInferredAttachmentsFromText: async () => 0,
+      recordFileChanges: () => {},
+      summarizeItemForStatus: () => [],
+      extractWebSearchDetails: () => [],
+      buildFileDiffSection: () => "",
+      buildTurnRenderPlan: () => ({ primaryMessage: "", statusMessages: [], attachments: [] }),
+      sendChunkedToChannel: async () => {},
+      normalizeFinalSummaryText: (text: string) => text,
+      sanitizeSummaryForDiscord: (text: string) => text,
+      truncateStatusText: (text: string) => text,
+      isTransientReconnectErrorMessage: () => false,
+      safeSendToChannel: async () => null,
+      truncateForDiscordMessage: (text: string) => text,
+      discordMaxMessageLength: 1900,
+      debugLog: () => {},
+      writeHeartbeatFile: async () => {},
+      onTurnFinalized: async () => {}
+    });
+
+    await runtime.handleNotification({
+      method: "error",
+      params: { threadId: "thread-1" }
+    });
+  });
+
+  test("rejects the tracker when finalization work throws", async () => {
+    const activeTurns = new Map<string, TurnTracker>();
+    const tracker = createTracker();
+    tracker.fullText = "final summary";
+    let resolved = 0;
+    let rejectedError: Error | null = null;
+    tracker.resolve = () => {
+      resolved += 1;
+    };
+    tracker.reject = (error?: Error) => {
+      rejectedError = error ?? new Error("missing error");
+    };
+    activeTurns.set("thread-1", tracker);
+
+    const runtime = createNotificationRuntime({
+      activeTurns,
+      renderVerbosity: "user",
+      TURN_PHASE: {
+        RUNNING: "running",
+        RECONNECTING: "reconnecting",
+        FINALIZING: "finalizing",
+        FAILED: "failed",
+        DONE: "done"
+      },
+      transitionTurnPhase: () => true,
+      normalizeCodexNotification: (notification: CodexNotification) => {
+        const { method, params } = notification;
+        if (method === "turn/completed") {
+          return { kind: "turn_completed", threadId: params.threadId };
+        }
+        return { kind: "unknown" };
+      },
+      extractAgentMessageText: () => "",
+      maybeSendAttachmentsForItem: async () => {},
+      maybeSendInferredAttachmentsFromText: async () => 0,
+      recordFileChanges: () => {},
+      summarizeItemForStatus: () => [],
+      extractWebSearchDetails: () => [],
+      buildFileDiffSection: () => "",
+      buildTurnRenderPlan: () => ({ primaryMessage: "", statusMessages: [], attachments: [] }),
+      sendChunkedToChannel: async () => {
+        throw new Error("summary send failed");
+      },
+      normalizeFinalSummaryText: (text: string) => text,
+      sanitizeSummaryForDiscord: (text: string) => text,
+      truncateStatusText: (text: string) => text,
+      isTransientReconnectErrorMessage: () => false,
+      safeSendToChannel: async () => null,
+      truncateForDiscordMessage: (text: string) => text,
+      discordMaxMessageLength: 1900,
+      debugLog: () => {},
+      writeHeartbeatFile: async () => {},
+      onTurnFinalized: async () => {},
+      turnCompletionQuietMs: 10,
+      turnCompletionMaxWaitMs: 50
+    });
+
+    await runtime.handleNotification({
+      method: "turn/completed",
+      params: { threadId: "thread-1" }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(resolved).toBe(0);
+    expect(rejectedError?.message).toBe("summary send failed");
+    expect(activeTurns.has("thread-1")).toBe(false);
+  });
 });
