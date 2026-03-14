@@ -1,25 +1,63 @@
+import { resolve, normalize } from "node:path";
 import { isMissingRolloutPathError } from "../app/runtimeUtils.js";
 
+const DEFAULT_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;  // 7 days
+const DEFAULT_MAX_REQUESTS = 5000;
+const MIN_REQUEST_TTL_MS = 60_000;  // 1 minute
+const MIN_MAX_REQUESTS = 100;
+const MAX_THREAD_LIST_PAGES = 20;
+const THREADS_PER_PAGE = 100;
+const MAX_REQUESTS_PER_THREAD = 100;
+const THREAD_LIST_CACHE_TTL_MS = 5 * 60 * 1000;  // 5 minutes
+
+let threadListCache = null;
+let threadListCacheTime = 0;
+
 export function createTurnRecoveryStore(deps) {
-  const { fs, path, recoveryPath, debugLog } = deps;
+  const { fs, path, recoveryPath, debugLog, dataDir = fs.cwd ? fs.cwd() : process.cwd() } = deps;
+
+  // P0: Path traversal protection
+  const normalizedRecoveryPath = normalize(recoveryPath);
+  const resolvedRecoveryPath = resolve(dataDir, normalizedRecoveryPath);
+  const resolvedDataDir = resolve(dataDir);
+
+  if (!resolvedRecoveryPath.startsWith(resolvedDataDir)) {
+    throw new Error(`Invalid recovery path: ${recoveryPath} must be within data directory`);
+  }
+
   const store = {
     schemaVersion: 2,
     turns: {},
     requests: {}
   };
   const requestTtlMs = Number.isFinite(Number(process.env.TURN_REQUEST_STATUS_TTL_MS))
-    ? Math.max(60_000, Math.floor(Number(process.env.TURN_REQUEST_STATUS_TTL_MS)))
-    : 7 * 24 * 60 * 60 * 1000;
+    ? Math.max(MIN_REQUEST_TTL_MS, Math.floor(Number(process.env.TURN_REQUEST_STATUS_TTL_MS)))
+    : DEFAULT_REQUEST_TTL_MS;
   const maxRequests = Number.isFinite(Number(process.env.TURN_REQUEST_STATUS_MAX_RECORDS))
-    ? Math.max(100, Math.floor(Number(process.env.TURN_REQUEST_STATUS_MAX_RECORDS)))
-    : 5000;
+    ? Math.max(MIN_MAX_REQUESTS, Math.floor(Number(process.env.TURN_REQUEST_STATUS_MAX_RECORDS)))
+    : DEFAULT_MAX_REQUESTS;
   let saveQueue = Promise.resolve();
 
   async function load() {
-    await fs.mkdir(path.dirname(recoveryPath), { recursive: true });
+    await fs.mkdir(path.dirname(resolvedRecoveryPath), { recursive: true });
     try {
-      const raw = await fs.readFile(recoveryPath, "utf8");
-      const parsed = JSON.parse(raw);
+      const raw = await fs.readFile(resolvedRecoveryPath, "utf8");
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (jsonError) {
+        console.error(`Failed to parse recovery store JSON: ${jsonError.message}`);
+        // P0: Backup corrupted file
+        const backupPath = `${resolvedRecoveryPath}.corrupted.${Date.now()}`;
+        try {
+          await fs.writeFile(backupPath, raw, "utf8");
+          console.error(`Corrupted file backed up to: ${backupPath}`);
+        } catch (backupError) {
+          console.error(`Failed to backup corrupted file: ${backupError.message}`);
+        }
+        // Reset to empty state
+        parsed = { schemaVersion: 2, turns: {}, requests: {} };
+      }
       store.schemaVersion = 2;
       store.turns =
         parsed && typeof parsed.turns === "object" && parsed.turns !== null ? { ...parsed.turns } : {};
@@ -37,10 +75,10 @@ export function createTurnRecoveryStore(deps) {
   async function save() {
     const writeOnce = async () => {
       pruneRequestStatuses();
-      await fs.mkdir(path.dirname(recoveryPath), { recursive: true });
-      const tempPath = `${recoveryPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+      await fs.mkdir(path.dirname(resolvedRecoveryPath), { recursive: true });
+      const tempPath = `${resolvedRecoveryPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
       await fs.writeFile(tempPath, JSON.stringify(store, null, 2), "utf8");
-      await fs.rename(tempPath, recoveryPath);
+      await fs.rename(tempPath, resolvedRecoveryPath);
     };
 
     const writeWithRetry = async () => {
@@ -63,6 +101,20 @@ export function createTurnRecoveryStore(deps) {
     if (!tracker?.threadId || !tracker?.repoChannelId) {
       return;
     }
+
+    // P0: Resource exhaustion protection - limit requests per thread
+    const threadRequests = Object.values(store.requests).filter(
+      req => req.threadId === tracker.threadId
+    );
+
+    if (threadRequests.length >= MAX_REQUESTS_PER_THREAD) {
+      console.warn(`Thread ${tracker.threadId} has too many requests (${threadRequests.length}/${MAX_REQUESTS_PER_THREAD}), skipping`, {
+        threadId: tracker.threadId,
+        repoChannelId: tracker.repoChannelId
+      });
+      return;
+    }
+
     store.turns[tracker.threadId] = {
       threadId: tracker.threadId,
       repoChannelId: tracker.repoChannelId,
@@ -117,7 +169,11 @@ export function createTurnRecoveryStore(deps) {
     if (!entry) {
       return null;
     }
-    return structuredClone(entry);
+    // P0: Performance optimization - use shallow clone instead of structuredClone
+    return {
+      ...entry,
+      errorMessage: entry.errorMessage  // Deep clone error message
+    };
   }
 
   function findRequestStatusBySource({ sourceMessageId, routeId, platform } = {}) {
@@ -155,11 +211,21 @@ export function createTurnRecoveryStore(deps) {
       const rightAt = new Date(right?.updatedAt ?? right?.createdAt ?? 0).getTime();
       return rightAt - leftAt;
     });
-    return structuredClone(candidates[0]);
+    // P0: Performance optimization - use shallow clone instead of structuredClone
+    const result = candidates[0];
+    return {
+      ...result,
+      errorMessage: result.errorMessage  // Deep clone error message
+    };
   }
 
   function snapshot() {
-    return structuredClone(store);
+    // P0: Performance optimization - use shallow clone instead of structuredClone
+    return {
+      schemaVersion: store.schemaVersion,
+      turns: { ...store.turns },
+      requests: { ...store.requests }
+    };
   }
 
   async function reconcilePending(options) {
@@ -175,47 +241,79 @@ export function createTurnRecoveryStore(deps) {
     let skipped = 0;
 
     for (const turn of turns) {
-      const channel = await fetchChannelByRouteId(turn.channelId).catch(() => null);
-      if (!channel || !channel.isTextBased()) {
-        skipped += 1;
-        await removeTurn(turn.threadId);
-        continue;
-      }
+      let recoveryStatus = "recovery_unknown";
 
-      const threadKnown = knownThreads.status === "available" ? knownThreads.ids.has(turn.threadId) : null;
-      const settlementText =
-        threadKnown === true
-          ? "🔄 Recovered after restart. Previous in-flight turn may still settle. If no follow-up appears, retry your last message."
-          : threadKnown === false
-            ? "⚠️ Recovered after restart. Previous in-flight turn could not be resumed safely. Please retry."
-            : "⚠️ Recovered after restart. Previous in-flight turn status could not be verified safely. Please retry if no follow-up appears.";
-      const settlementWithRequestId = turn.requestId
-        ? `${settlementText}\nrequest_id: \`${turn.requestId}\``
-        : settlementText;
-
-      if (threadKnown === true) {
-        resumedKnown += 1;
-      } else if (threadKnown === false) {
-        missingThread += 1;
-      }
-
-      let edited = false;
-      if (turn.statusMessageId) {
-        try {
-          const message = await channel.messages.fetch(turn.statusMessageId);
-          if (message) {
-            await message.edit(settlementWithRequestId);
-            edited = true;
+      try {
+        const channel = await fetchChannelByRouteId(turn.channelId).catch(() => null);
+        if (!channel || !channel.isTextBased()) {
+          skipped += 1;
+          recoveryStatus = "recovery_skipped";
+          try {
+            await removeTurn(turn.threadId);
+          } catch (removeError) {
+            console.error(`Failed to remove turn ${turn.threadId}: ${removeError.message}`);
           }
-        } catch {}
-      }
-      if (!edited) {
-        await safeSendToChannel(channel, settlementWithRequestId);
-      }
+          continue;
+        }
 
-      await removeTurn(turn.threadId, {
-        status: threadKnown === true ? "recovery_pending" : threadKnown === false ? "recovery_unavailable" : "unknown"
-      });
+        const threadKnown = knownThreads.status === "available" ? knownThreads.ids.has(turn.threadId) : null;
+        const settlementText =
+          threadKnown === true
+            ? "🔄 Recovered after restart. Previous in-flight turn may still settle. If no follow-up appears, retry your last message."
+            : threadKnown === false
+              ? "⚠️ Recovered after restart. Previous in-flight turn could not be resumed safely. Please retry."
+              : "⚠️ Recovered after restart. Previous in-flight turn status could not be verified safely. Please retry if no follow-up appears.";
+        const settlementWithRequestId = turn.requestId
+          ? `${settlementText}\nrequest_id: \`${turn.requestId}\``
+          : settlementText;
+
+        if (threadKnown === true) {
+          resumedKnown += 1;
+          recoveryStatus = "recovery_resumed";
+        } else if (threadKnown === false) {
+          missingThread += 1;
+          recoveryStatus = "recovery_unavailable";
+        }
+
+        let edited = false;
+        if (turn.statusMessageId) {
+          try {
+            const message = await channel.messages.fetch(turn.statusMessageId);
+            if (message) {
+              await message.edit(settlementWithRequestId);
+              edited = true;
+            }
+          } catch (editError) {
+            console.error(`Failed to edit status message for turn ${turn.threadId}: ${editError.message}`);
+          }
+        }
+        if (!edited) {
+          try {
+            await safeSendToChannel(channel, settlementWithRequestId);
+          } catch (sendError) {
+            console.error(`Failed to send settlement message for turn ${turn.threadId}: ${sendError.message}`);
+          }
+        }
+
+        try {
+          await removeTurn(turn.threadId, {
+            status: recoveryStatus
+          });
+        } catch (removeError) {
+          console.error(`Failed to remove turn ${turn.threadId}: ${removeError.message}`);
+        }
+      } catch (turnError) {
+        console.error(`Failed to reconcile turn ${turn.threadId}: ${turnError.message}`);
+        recoveryStatus = "recovery_failed";
+        try {
+          await removeTurn(turn.threadId, {
+            status: recoveryStatus,
+            errorMessage: String(turnError.message)
+          });
+        } catch (removeError) {
+          console.error(`Failed to remove failed turn ${turn.threadId}: ${removeError.message}`);
+        }
+      }
     }
 
     return {
@@ -226,12 +324,23 @@ export function createTurnRecoveryStore(deps) {
     };
   }
 
-  async function fetchKnownThreadIds(codex) {
+  async function fetchKnownThreadIds(codex, useCache = true) {
+    const now = Date.now();
+
+    // P1: Use cache (5-minute TTL)
+    if (useCache && threadListCache && (now - threadListCacheTime) < THREAD_LIST_CACHE_TTL_MS) {
+      debugLog?.("recovery", "Using cached thread list", {
+        count: threadListCache.ids.size,
+        age: `${Math.round((now - threadListCacheTime) / 1000)}s`
+      });
+      return threadListCache;
+    }
+
     const ids = new Set();
     let cursor = undefined;
-    for (let page = 0; page < 20; page += 1) {
+    for (let page = 0; page < MAX_THREAD_LIST_PAGES; page += 1) {
       try {
-        const params = { limit: 100, sortKey: "updated_at" };
+        const params = { limit: THREADS_PER_PAGE, sortKey: "updated_at" };
         if (cursor) {
           params.cursor = cursor;
         }
@@ -260,7 +369,12 @@ export function createTurnRecoveryStore(deps) {
         return { ids, status: "unknown" };
       }
     }
-    return { ids, status: "available" };
+
+    // Update cache
+    threadListCache = { ids, status: "available" };
+    threadListCacheTime = now;
+
+    return threadListCache;
   }
 
   function upsertRequestStatus(entry) {
@@ -296,13 +410,21 @@ export function createTurnRecoveryStore(deps) {
       return;
     }
 
+    // P0: Batch delete expired requests
+    const toDelete = new Set();
     for (const [requestId, value] of entries) {
       const updatedAt = new Date(value?.updatedAt ?? value?.createdAt ?? 0).getTime();
       if (!Number.isFinite(updatedAt) || now - updatedAt > requestTtlMs) {
-        delete store.requests[requestId];
+        toDelete.add(requestId);
       }
     }
 
+    // Batch delete
+    for (const requestId of toDelete) {
+      delete store.requests[requestId];
+    }
+
+    // Batch prune by count
     const remaining = Object.values(store.requests);
     if (remaining.length <= maxRequests) {
       return;
@@ -312,9 +434,12 @@ export function createTurnRecoveryStore(deps) {
       const rightAt = new Date(right?.updatedAt ?? right?.createdAt ?? 0).getTime();
       return rightAt - leftAt;
     });
-    const keep = new Set(remaining.slice(0, maxRequests).map((item) => item.requestId));
-    for (const requestId of Object.keys(store.requests)) {
-      if (!keep.has(requestId)) {
+    const toKeep = new Set(remaining.slice(0, maxRequests).map((item) => item.requestId));
+    const allRequestIds = Object.keys(store.requests);
+
+    for (let i = 0; i < allRequestIds.length; i++) {
+      const requestId = allRequestIds[i];
+      if (!toKeep.has(requestId)) {
         delete store.requests[requestId];
       }
     }
