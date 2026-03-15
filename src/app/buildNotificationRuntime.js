@@ -14,6 +14,8 @@ export function buildNotificationRuntime(deps) {
     debugLog,
     turnRecoveryStore,
     sendChunkedToChannel,
+    discordMaxMessageLength = 1900,
+    feishuMaxMessageLength = 8000,
     disableStreamingOutput = false
   } = deps;
 
@@ -33,7 +35,8 @@ export function buildNotificationRuntime(deps) {
     isTransientReconnectErrorMessage,
     safeSendToChannel,
     truncateForDiscordMessage,
-    discordMaxMessageLength: 1900,
+    discordMaxMessageLength,
+    feishuMaxMessageLength,
     disableStreamingOutput,
     debugLog,
     writeHeartbeatFile: runtimeAdapters.writeHeartbeatFile,

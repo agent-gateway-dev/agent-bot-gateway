@@ -18,7 +18,8 @@ export function createNotificationRuntime(deps) {
     isTransientReconnectErrorMessage,
     safeSendToChannel,
     truncateForDiscordMessage,
-    discordMaxMessageLength,
+    discordMaxMessageLength = 1900,
+    feishuMaxMessageLength = 8000,
     disableStreamingOutput = false,
     feishuStreamMinChars = 80,
     debugLog,
@@ -649,16 +650,16 @@ export function createNotificationRuntime(deps) {
 
   function buildTrackerMessageContent(tracker) {
     if (canInlineStreamTrackerOutput(tracker)) {
-      const firstChunk = String(splitTextForMessages(tracker.fullText, discordMaxMessageLength)[0] ?? "").trim();
+      const firstChunk = String(splitTextForMessages(tracker.fullText, messageChunkLimitForTracker(tracker))[0] ?? "").trim();
       if (firstChunk) {
         return firstChunk;
       }
     }
-    return truncateForDiscordMessage(tracker.currentStatusLine || "⏳ Thinking...", discordMaxMessageLength);
+    return truncateForDiscordMessage(tracker.currentStatusLine || "⏳ Thinking...", messageChunkLimitForTracker(tracker));
   }
 
   async function sendFinalSummary(tracker, summaryTextForDiscord) {
-    const summaryChunks = splitTextForMessages(summaryTextForDiscord, discordMaxMessageLength);
+    const summaryChunks = splitTextForMessages(summaryTextForDiscord, messageChunkLimitForTracker(tracker));
     if (summaryChunks.length === 0) {
       return;
     }
@@ -667,14 +668,14 @@ export function createNotificationRuntime(deps) {
       return;
     }
     if (!canInlineStreamTrackerOutput(tracker)) {
-      await sendChunkedToChannel(tracker.channel, summaryTextForDiscord);
+      await sendChunkedToChannel(tracker.channel, summaryTextForDiscord, messageChunkLimitForTracker(tracker));
       return;
     }
 
     await editTrackerMessage(tracker, summaryChunks[0]);
     const remaining = summaryChunks.slice(1).join("");
     if (remaining) {
-      await sendChunkedToChannel(tracker.channel, remaining);
+      await sendChunkedToChannel(tracker.channel, remaining, messageChunkLimitForTracker(tracker));
     }
   }
 
@@ -713,7 +714,7 @@ export function createNotificationRuntime(deps) {
       return;
     }
 
-    const chunks = splitTextForMessages(pendingText, discordMaxMessageLength).filter((chunk) => typeof chunk === "string" && chunk.length > 0);
+    const chunks = splitTextForMessages(pendingText, feishuMaxMessageLength).filter((chunk) => typeof chunk === "string" && chunk.length > 0);
     if (chunks.length === 0) {
       return;
     }
@@ -795,8 +796,12 @@ export function createNotificationRuntime(deps) {
     if (!remaining.trim()) {
       return;
     }
-    await sendChunkedToChannel(tracker.channel, remaining);
+    await sendChunkedToChannel(tracker.channel, remaining, feishuMaxMessageLength);
     tracker.streamedSummaryText = summaryTextForDiscord;
+  }
+
+  function messageChunkLimitForTracker(tracker) {
+    return isFeishuTracker(tracker) ? feishuMaxMessageLength : discordMaxMessageLength;
   }
 
   function summarizeForDebug(text, max = 180) {

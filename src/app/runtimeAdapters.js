@@ -137,12 +137,25 @@ export function createRuntimeAdapters(deps) {
     );
   }
 
-  async function sendChunkedToChannel(channel, text) {
+  function resolveMessageChunkLimit(channel, overrideLimit) {
+    if (Number.isFinite(overrideLimit) && overrideLimit > 0) {
+      return Math.floor(overrideLimit);
+    }
+    const platform = String(channel?.platform ?? "").trim().toLowerCase();
+    const routeId = String(channel?.id ?? "").trim().toLowerCase();
+    const isFeishu = platform === "feishu" || routeId.startsWith("feishu:");
+    if (isFeishu && Number.isFinite(channelMessagingConfig.feishuMaxMessageLength)) {
+      return Math.max(200, Math.floor(channelMessagingConfig.feishuMaxMessageLength));
+    }
+    return Math.max(200, Math.floor(channelMessagingConfig.discordMaxMessageLength));
+  }
+
+  async function sendChunkedToChannel(channel, text, limit) {
     await sendChunkedToChannelFromRenderer(
       channel,
       text,
       channelMessagingConfig.safeSendToChannel,
-      channelMessagingConfig.discordMaxMessageLength
+      resolveMessageChunkLimit(channel, limit)
     );
   }
 

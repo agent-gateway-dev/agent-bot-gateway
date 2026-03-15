@@ -19,7 +19,7 @@ import { formatInputTextForSetup } from "./runtimeUtils.js";
 import { isFeishuRouteId } from "../feishu/ids.js";
 
 export async function buildRuntimeGraph(deps) {
-  const { runtimeEnv, discordToken, execFileAsync, debugLog, discordMaxMessageLength, config, state } = deps;
+  const { runtimeEnv, discordToken, execFileAsync, debugLog, discordMaxMessageLength, feishuMaxMessageLength, config, state } = deps;
   const {
     codexBin,
     imageCacheDir,
@@ -120,7 +120,8 @@ export async function buildRuntimeGraph(deps) {
       safeSendToChannel,
       safeSendToChannelPayload,
       truncateStatusText,
-      discordMaxMessageLength
+      discordMaxMessageLength,
+      feishuMaxMessageLength
     }
   });
 

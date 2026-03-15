@@ -37,6 +37,18 @@ export function loadRuntimeEnv() {
   const configuredMaxImages = Number(process.env.DISCORD_MAX_IMAGES_PER_MESSAGE ?? 4);
   const maxImagesPerMessage =
     Number.isFinite(configuredMaxImages) && configuredMaxImages > 0 ? Math.floor(configuredMaxImages) : 4;
+  const configuredDiscordChunkLimit = Number(
+    process.env.DISCORD_MESSAGE_CHUNK_LIMIT ?? process.env.DISCORD_MAX_MESSAGE_LENGTH ?? ""
+  );
+  const discordMessageChunkLimit =
+    Number.isFinite(configuredDiscordChunkLimit) && configuredDiscordChunkLimit >= 200
+      ? Math.floor(configuredDiscordChunkLimit)
+      : 1900;
+  const configuredFeishuChunkLimit = Number(process.env.FEISHU_MESSAGE_CHUNK_LIMIT ?? "");
+  const feishuMessageChunkLimit =
+    Number.isFinite(configuredFeishuChunkLimit) && configuredFeishuChunkLimit >= 200
+      ? Math.floor(configuredFeishuChunkLimit)
+      : 8000;
   const configuredAttachmentMaxBytes = Number(process.env.DISCORD_ATTACHMENT_MAX_BYTES ?? "");
   const attachmentMaxBytes =
     Number.isFinite(configuredAttachmentMaxBytes) && configuredAttachmentMaxBytes > 0
@@ -109,6 +121,8 @@ export function loadRuntimeEnv() {
     generalChannelCwd,
     imageCacheDir,
     maxImagesPerMessage,
+    discordMessageChunkLimit,
+    feishuMessageChunkLimit,
     attachmentMaxBytes,
     attachmentRoots,
     attachmentInferFromText,

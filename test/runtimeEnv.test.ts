@@ -12,6 +12,8 @@ const ENV_KEYS = [
   "DISCORD_GENERAL_CWD",
   "DISCORD_IMAGE_CACHE_DIR",
   "DISCORD_MAX_IMAGES_PER_MESSAGE",
+  "DISCORD_MESSAGE_CHUNK_LIMIT",
+  "DISCORD_MAX_MESSAGE_LENGTH",
   "DISCORD_ATTACHMENT_MAX_BYTES",
   "DISCORD_ATTACHMENT_ROOTS",
   "DISCORD_ATTACHMENT_INFER_FROM_TEXT",
@@ -31,6 +33,7 @@ const ENV_KEYS = [
   "DISCORD_PROJECTS_CATEGORY_NAME",
   "DISCORD_LEGACY_CATEGORY_NAME",
   "CODEX_EXTRA_WRITABLE_ROOTS",
+  "FEISHU_MESSAGE_CHUNK_LIMIT",
   "FEISHU_UNBOUND_CHAT_MODE",
   "FEISHU_UNBOUND_CHAT_CWD"
 ] as const;
@@ -57,6 +60,7 @@ describe("runtime env", () => {
     process.env.DISCORD_REPO_ROOT = ".";
     process.env.DISCORD_GENERAL_CHANNEL_NAME = "GENERAL";
     process.env.DISCORD_MAX_IMAGES_PER_MESSAGE = "7";
+    process.env.DISCORD_MESSAGE_CHUNK_LIMIT = "1850";
     process.env.DISCORD_ATTACHMENT_MAX_BYTES = "1024";
     process.env.DISCORD_ATTACHMENT_ROOTS = "./one:./two";
     process.env.DISCORD_ATTACHMENT_INFER_FROM_TEXT = "1";
@@ -69,6 +73,7 @@ describe("runtime env", () => {
     process.env.DISCORD_DEBUG_LOGGING = "1";
     process.env.DISCORD_PROJECTS_CATEGORY_NAME = "custom-projects";
     process.env.CODEX_EXTRA_WRITABLE_ROOTS = "./tmp-a:./tmp-b";
+    process.env.FEISHU_MESSAGE_CHUNK_LIMIT = "8000";
 
     const env = loadRuntimeEnv();
 
@@ -78,6 +83,8 @@ describe("runtime env", () => {
     expect(env.codexHomeEnv).toBe("/tmp/codex-home");
     expect(env.generalChannelName).toBe("general");
     expect(env.maxImagesPerMessage).toBe(7);
+    expect(env.discordMessageChunkLimit).toBe(1850);
+    expect(env.feishuMessageChunkLimit).toBe(8000);
     expect(env.attachmentMaxBytes).toBe(1024);
     expect(env.attachmentRoots).toHaveLength(2);
     expect(env.attachmentInferFromText).toBe(true);
@@ -94,6 +101,7 @@ describe("runtime env", () => {
 
   test("falls back to safe defaults for invalid numeric values", () => {
     process.env.DISCORD_MAX_IMAGES_PER_MESSAGE = "-1";
+    process.env.DISCORD_MESSAGE_CHUNK_LIMIT = "-1";
     process.env.DISCORD_ATTACHMENT_MAX_BYTES = "0";
     process.env.DISCORD_MAX_ATTACHMENT_ISSUES_PER_TURN = "-1";
     process.env.DISCORD_HEARTBEAT_INTERVAL_MS = "1000";
@@ -101,6 +109,8 @@ describe("runtime env", () => {
     const env = loadRuntimeEnv();
 
     expect(env.maxImagesPerMessage).toBe(4);
+    expect(env.discordMessageChunkLimit).toBe(1900);
+    expect(env.feishuMessageChunkLimit).toBe(8000);
     expect(env.attachmentMaxBytes).toBe(8 * 1024 * 1024);
     expect(env.attachmentIssueLimitPerTurn).toBe(1);
     expect(env.heartbeatIntervalMs).toBe(30000);

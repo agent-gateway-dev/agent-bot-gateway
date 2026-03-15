@@ -20,12 +20,13 @@ export async function loadRuntimeBootstrapConfig() {
   }
 
   const runtimeEnv = loadRuntimeEnv();
-  const { configPath, statePath, debugLoggingEnabled } = runtimeEnv;
+  const { configPath, statePath, debugLoggingEnabled, discordMessageChunkLimit, feishuMessageChunkLimit } = runtimeEnv;
   const execFileAsync = promisify(execFile);
   const defaultModel = "gpt-5.3-codex";
   const defaultEffort = "medium";
   const debugLog = createDebugLog(debugLoggingEnabled);
-  const discordMaxMessageLength = 1900;
+  const discordMaxMessageLength = discordMessageChunkLimit;
+  const feishuMaxMessageLength = feishuMessageChunkLimit;
 
   const config = await loadConfig(configPath, { defaultModel, defaultEffort });
   let channelSetups = { ...config.channels };
@@ -43,6 +44,7 @@ export async function loadRuntimeBootstrapConfig() {
     execFileAsync,
     debugLog,
     discordMaxMessageLength,
+    feishuMaxMessageLength,
     config,
     state,
     getChannelSetups: () => channelSetups,
