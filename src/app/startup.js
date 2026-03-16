@@ -53,7 +53,7 @@ export async function startBridgeRuntime({
       } else if (summary?.transport === "webhook") {
         console.log(`feishu transport ready (mode=webhook, path=${summary.webhookPath ?? "(unknown)"})`);
       }
-      const feishuSegmentedStreaming = process.env.FEISHU_SEGMENTED_STREAMING !== "0";
+      const feishuSegmentedStreaming = process.env.FEISHU_SEGMENTED_STREAMING === "1";
       const configuredFeishuStreamMinChars = Number(process.env.FEISHU_STREAM_MIN_CHARS ?? "");
       const feishuStreamMinChars =
         Number.isFinite(configuredFeishuStreamMinChars) && configuredFeishuStreamMinChars > 0

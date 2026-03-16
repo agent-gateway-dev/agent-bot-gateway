@@ -167,13 +167,23 @@ describe("runtime env", () => {
     expect(env.feishuUnboundChatMode).toBe("strict");
   });
 
-  test("supports disabling Feishu segmented streaming", () => {
-    process.env.FEISHU_SEGMENTED_STREAMING = "0";
+  test("defaults Feishu segmented streaming to disabled", () => {
+    delete process.env.FEISHU_SEGMENTED_STREAMING;
     process.env.FEISHU_STREAM_MIN_CHARS = "120";
 
     const env = loadRuntimeEnv();
 
     expect(env.feishuSegmentedStreaming).toBe(false);
+    expect(env.feishuStreamMinChars).toBe(120);
+  });
+
+  test("supports enabling Feishu segmented streaming", () => {
+    process.env.FEISHU_SEGMENTED_STREAMING = "1";
+    process.env.FEISHU_STREAM_MIN_CHARS = "120";
+
+    const env = loadRuntimeEnv();
+
+    expect(env.feishuSegmentedStreaming).toBe(true);
     expect(env.feishuStreamMinChars).toBe(120);
   });
 });

@@ -129,9 +129,13 @@ describe("notification runtime ux flow cutover", () => {
     const tracker = createTracker();
     activeTurns.set("thread-1", tracker);
     const sentMessages: string[] = [];
+    const statusEdits: string[] = [];
     const chunkedMessages: string[] = [];
     const attachmentCalls: string[] = [];
     const itemAttachmentCalls: string[] = [];
+    tracker.statusMessage.edit = async (text: string) => {
+      statusEdits.push(text);
+    };
 
     const runtime = createNotificationRuntime({
       activeTurns,
@@ -214,8 +218,8 @@ describe("notification runtime ux flow cutover", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 70));
 
-    expect(sentMessages.some((line) => line.startsWith("👷 Working"))).toBe(true);
-    expect(sentMessages.some((line) => line.startsWith("✅ Work complete"))).toBe(true);
+    expect(statusEdits.some((line) => line.startsWith("👷 Working"))).toBe(true);
+    expect(statusEdits.some((line) => line.startsWith("✅ Work complete"))).toBe(true);
     expect(sentMessages.some((line) => line.startsWith("🖼️ Image:"))).toBe(false);
     expect(chunkedMessages).toContain("Summary complete with image /tmp/final.png");
     expect(chunkedMessages).toContain("```ansi\n+2 -1\n```");
@@ -288,6 +292,10 @@ describe("notification runtime ux flow cutover", () => {
     const tracker = createTracker();
     activeTurns.set("thread-1", tracker);
     const sentMessages: string[] = [];
+    const statusEdits: string[] = [];
+    tracker.statusMessage.edit = async (text: string) => {
+      statusEdits.push(text);
+    };
 
     const runtime = createNotificationRuntime({
       activeTurns,
@@ -352,7 +360,7 @@ describe("notification runtime ux flow cutover", () => {
       })
     ]);
 
-    const workingMessages = sentMessages.filter((line) => line.startsWith("👷 Working"));
+    const workingMessages = statusEdits.filter((line) => line.startsWith("👷 Working"));
     expect(workingMessages.length).toBe(1);
   });
 
@@ -590,6 +598,7 @@ describe("notification runtime ux flow cutover", () => {
         streamedMessages.push(text);
         return { id: `feishu-stream-${streamedMessages.length}` };
       },
+      feishuSegmentedStreaming: true,
       truncateForDiscordMessage: (text: string) => text,
       discordMaxMessageLength: 1900,
       debugLog: () => {},
@@ -654,6 +663,7 @@ describe("notification runtime ux flow cutover", () => {
         streamedMessages.push(text);
         return { id: `feishu-stream-${streamedMessages.length}` };
       },
+      feishuSegmentedStreaming: true,
       truncateForDiscordMessage: (text: string) => text,
       discordMaxMessageLength: 1900,
       debugLog: () => {},
@@ -730,6 +740,7 @@ describe("notification runtime ux flow cutover", () => {
         streamedMessages.push(text);
         return null;
       },
+      feishuSegmentedStreaming: true,
       truncateForDiscordMessage: (text: string) => text,
       discordMaxMessageLength: 1900,
       debugLog: () => {},

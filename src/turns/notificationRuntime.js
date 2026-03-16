@@ -21,7 +21,7 @@ export function createNotificationRuntime(deps) {
     discordMaxMessageLength = 1900,
     feishuMaxMessageLength = 8000,
     disableStreamingOutput = false,
-    feishuSegmentedStreaming = true,
+    feishuSegmentedStreaming = false,
     feishuStreamMinChars = 80,
     debugLog,
     writeHeartbeatFile,
@@ -517,7 +517,7 @@ export function createNotificationRuntime(deps) {
   }
 
   async function ensureWorkingStage(tracker) {
-    if (!tracker?.channel || tracker?.workingMessageId) {
+    if (!tracker?.channel || tracker?.workingMessageId || (tracker?.hasToolCall && tracker?.workingTicker)) {
       return;
     }
     if (tracker.workingMessageCreatePromise) {
@@ -531,6 +531,13 @@ export function createNotificationRuntime(deps) {
     }
     const createPromise = (async () => {
       const elapsed = formatDuration(Date.now() - tracker.firstToolCallAt);
+      if (tracker.statusMessageId) {
+        const payload = `👷 Working (${elapsed})`;
+        pushStatusLine(tracker, payload);
+        await editTrackerMessage(tracker, buildTrackerMessageContent(tracker));
+        startWorkingTicker(tracker);
+        return;
+      }
       const message = await safeSendToChannel(tracker.channel, `👷 Working (${elapsed})`);
       if (!message) {
         return;
@@ -548,17 +555,34 @@ export function createNotificationRuntime(deps) {
   }
 
   function startWorkingTicker(tracker) {
-    if (!tracker?.workingMessageId || !tracker?.channel) {
+    if (!tracker?.channel) {
       return;
     }
     clearWorkingTicker(tracker);
     const tick = async () => {
-      if (!tracker?.workingMessageId || !tracker?.channel) {
+      if (!tracker?.channel) {
         return;
       }
       const firstToolAt = tracker.firstToolCallAt || Date.now();
       const elapsed = formatDuration(Date.now() - firstToolAt);
       const payload = `👷 Working (${elapsed})`;
+      if (tracker.statusMessageId) {
+        pushStatusLine(tracker, payload);
+        await editTrackerMessage(tracker, buildTrackerMessageContent(tracker));
+        tracker.workingLastRefreshAt = Date.now();
+        debugLog("status", "working ticker refreshed", {
+          threadId: tracker.threadId,
+          turnId: tracker.threadId,
+          discordMessageId: tracker.statusMessageId ?? null,
+          workingMessageId: tracker.workingMessageId ?? null,
+          elapsed,
+          payload
+        });
+        return;
+      }
+      if (!tracker.workingMessageId) {
+        return;
+      }
       try {
         const edited = await tracker.channel.messages.edit(tracker.workingMessageId, payload);
         if (edited) {
@@ -602,6 +626,11 @@ export function createNotificationRuntime(deps) {
     if (tracker.hasToolCall && tracker.firstToolCallAt) {
       tracker.lastToolCompletedAt = Date.now();
       const elapsed = formatDuration(tracker.lastToolCompletedAt - tracker.firstToolCallAt);
+      if (tracker.statusMessageId) {
+        pushStatusLine(tracker, `✅ Work complete (${elapsed})`);
+        await editTrackerMessage(tracker, buildTrackerMessageContent(tracker));
+        return;
+      }
       await safeSendToChannel(tracker.channel, `✅ Work complete (${elapsed})`);
     }
   }
