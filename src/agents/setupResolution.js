@@ -1,4 +1,4 @@
-import { createAgentRegistry } from "./agentRegistry.ts";
+import { createAgentRegistry } from "./agentRegistry.js";
 
 function normalizeId(value) {
   return String(value ?? "").trim();
