@@ -1175,7 +1175,7 @@ function getProxyUrl() {
 
 function resolveImageCacheDir(imageCacheDir) {
   const candidate = typeof imageCacheDir === "string" ? imageCacheDir.trim() : "";
-  return path.resolve(candidate || "/tmp/codex-discord-bridge-images");
+  return path.resolve(candidate || "/tmp/agent-gateway-images");
 }
 
 function guessImageExtensionFromHeaders(headers, fileName = "") {

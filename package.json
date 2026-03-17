@@ -1,12 +1,12 @@
 {
-  "name": "codex-discord-bridge",
+  "name": "agent-gateway",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Discord and Feishu bridge for Codex app-server",
   "packageManager": "bun@1.2.5",
   "bin": {
-    "dc-bridge": "bin/dc-bridge"
+    "agent-gateway": "bin/agent-gateway"
   },
   "scripts": {
     "start": "bun run src/index.js",

@@ -3,6 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 
+const DEFAULT_LAUNCHD_LABEL = "com.agent.gateway";
+const LEGACY_LAUNCHD_LABEL = "com.codex.discord.bridge";
+const DEFAULT_SOURCE_PLIST_FILENAME = "com.agent.gateway.plist";
+const LEGACY_SOURCE_PLIST_FILENAME = "com.codex.discord.bridge.plist";
+const DEFAULT_STDOUT_LOG_PATH = "/tmp/agent-gateway.out.log";
+const DEFAULT_STDERR_LOG_PATH = "/tmp/agent-gateway.err.log";
+
 export interface CliRuntimePaths {
   configPath: string;
   statePath: string;
@@ -20,6 +27,7 @@ export interface LaunchdServiceInfo {
   domain: string;
   serviceTarget: string;
   runtimeRoot: string;
+  sourceWrapperPath: string;
   supportRoot: string;
   managedWrapperPath: string;
   managedSupervisorPath: string;
@@ -36,12 +44,12 @@ export function resolveCliRuntimePaths(cwd: string): CliRuntimePaths {
   const stdoutLogPath = resolveLogPath(
     process.env.DISCORD_STDOUT_LOG_PATH,
     plistLogPaths.stdoutLogPath,
-    "/tmp/codex-discord-bridge.out.log"
+    DEFAULT_STDOUT_LOG_PATH
   );
   const stderrLogPath = resolveLogPath(
     process.env.DISCORD_STDERR_LOG_PATH,
     plistLogPaths.stderrLogPath,
-    "/tmp/codex-discord-bridge.err.log"
+    DEFAULT_STDERR_LOG_PATH
   );
 
   return {
@@ -68,14 +76,16 @@ export function parsePathListEnv(raw: string | undefined): string[] {
 
 export function resolveLaunchdServiceInfo(cwd: string): LaunchdServiceInfo {
   const runtimeRoot = resolveRuntimeRoot(cwd);
-  const sourcePlistPath = path.resolve(runtimeRoot, "com.codex.discord.bridge.plist");
-  const labelFromPlist = readLaunchdLabel(runtimeRoot);
+  const sourcePlistPath = path.resolve(runtimeRoot, DEFAULT_SOURCE_PLIST_FILENAME);
+  const sourceRaw = readLaunchdSourcePlistRaw(runtimeRoot);
+  const labelFromPlist = sourceRaw ? extractPlistStringValue(sourceRaw, "Label") : null;
   const labelFromEnv = String(process.env.DISCORD_LAUNCHD_LABEL ?? "").trim();
-  const label = labelFromEnv || labelFromPlist || "com.codex.discord.bridge";
+  const label = labelFromEnv || labelFromPlist || DEFAULT_LAUNCHD_LABEL;
   const installedPlistPath = resolveInstalledLaunchdPlistPath(label);
   const uid = resolveUserId();
   const domain = `gui/${uid}`;
-  const supportRoot = path.resolve(resolveHomeDirectory(), "Library/Application Support/CodexDiscordBridge", label);
+  const sourceWrapperPath = path.resolve(runtimeRoot, "scripts/launchd-wrapper.sh");
+  const supportRoot = path.resolve(resolveHomeDirectory(), "Library/Application Support/AgentGateway", label);
   const managedWrapperPath = path.resolve(supportRoot, "launchd-wrapper.sh");
   const managedSupervisorPath = path.resolve(supportRoot, "restart-supervisor.sh");
   const sourceSupervisorPath = path.resolve(runtimeRoot, "scripts/restart-supervisor.sh");
@@ -85,12 +95,12 @@ export function resolveLaunchdServiceInfo(cwd: string): LaunchdServiceInfo {
   const stdoutLogPath = resolveLogPath(
     process.env.DISCORD_STDOUT_LOG_PATH,
     plistLogPaths.stdoutLogPath,
-    "/tmp/codex-discord-bridge.out.log"
+    DEFAULT_STDOUT_LOG_PATH
   );
   const stderrLogPath = resolveLogPath(
     process.env.DISCORD_STDERR_LOG_PATH,
     plistLogPaths.stderrLogPath,
-    "/tmp/codex-discord-bridge.err.log"
+    DEFAULT_STDERR_LOG_PATH
   );
   return {
     sourcePlistPath,
@@ -99,6 +109,7 @@ export function resolveLaunchdServiceInfo(cwd: string): LaunchdServiceInfo {
     domain,
     serviceTarget: `${domain}/${label}`,
     runtimeRoot,
+    sourceWrapperPath,
     supportRoot,
     managedWrapperPath,
     managedSupervisorPath,
@@ -140,22 +151,37 @@ function readLaunchdLogPaths(cwd: string): { stdoutLogPath: string | null; stder
   return { stdoutLogPath, stderrLogPath };
 }
 
-function readLaunchdLabel(cwd: string): string | null {
-  const raw = readLaunchdPlistRaw(cwd);
-  if (!raw) {
-    return null;
+function readLaunchdSourcePlistRaw(cwd: string): string | null {
+  const sourceCandidatePaths = [
+    path.resolve(cwd, DEFAULT_SOURCE_PLIST_FILENAME),
+    path.resolve(cwd, LEGACY_SOURCE_PLIST_FILENAME)
+  ];
+  for (const plistPath of sourceCandidatePaths) {
+    const raw = safeReadFile(plistPath);
+    if (raw) {
+      return raw;
+    }
   }
-  return extractPlistStringValue(raw, "Label");
+  return null;
 }
 
 function readLaunchdPlistRaw(cwd: string): string | null {
-  const sourcePlistPath = path.resolve(cwd, "com.codex.discord.bridge.plist");
-  const sourceRaw = safeReadFile(sourcePlistPath);
+  const sourceCandidatePaths = [
+    path.resolve(cwd, DEFAULT_SOURCE_PLIST_FILENAME),
+    path.resolve(cwd, LEGACY_SOURCE_PLIST_FILENAME)
+  ];
+  const sourceRaw = readLaunchdSourcePlistRaw(cwd);
   const sourceLabel = sourceRaw ? extractPlistStringValue(sourceRaw, "Label") : null;
   const labelFromEnv = String(process.env.DISCORD_LAUNCHD_LABEL ?? "").trim();
+  const preferredLabels = [
+    labelFromEnv,
+    sourceLabel,
+    DEFAULT_LAUNCHD_LABEL,
+    LEGACY_LAUNCHD_LABEL
+  ].filter((value, index, entries): value is string => Boolean(value) && entries.indexOf(value) === index);
   const preferredPaths = [
-    resolveInstalledLaunchdPlistPath(labelFromEnv || sourceLabel || "com.codex.discord.bridge"),
-    sourcePlistPath
+    ...preferredLabels.map((label) => resolveInstalledLaunchdPlistPath(label)),
+    ...sourceCandidatePaths
   ];
   for (const plistPath of preferredPaths) {
     const raw = safeReadFile(plistPath);
@@ -167,22 +193,32 @@ function readLaunchdPlistRaw(cwd: string): string | null {
 }
 
 export function renderLaunchdPlist(service: LaunchdServiceInfo): string {
+  const launchPath = `${path.dirname(service.nodeBinaryPath)}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
+  const launchCommand = `cd ${shellQuote(service.runtimeRoot)} && exec ${shellQuote(service.nodeBinaryPath)} ${shellQuote("./scripts/start-with-proxy.mjs")}`;
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
     '<plist version="1.0">',
     "<dict>",
+    "  <key>EnvironmentVariables</key>",
+    "  <dict>",
+    "    <key>PATH</key>",
+    `    <string>${escapeXml(launchPath)}</string>`,
+    "  </dict>",
     "  <key>Label</key>",
     `  <string>${escapeXml(service.label)}</string>`,
     "  <key>ProgramArguments</key>",
     "  <array>",
     "    <string>/bin/bash</string>",
-    `    <string>${escapeXml(service.managedWrapperPath)}</string>`,
+    "    <string>-lc</string>",
+    `    <string>${escapeXml(launchCommand)}</string>`,
     "  </array>",
     "  <key>RunAtLoad</key>",
     "  <true/>",
     "  <key>KeepAlive</key>",
     "  <true/>",
+    "  <key>ThrottleInterval</key>",
+    "  <integer>15</integer>",
     "  <key>StandardOutPath</key>",
     `  <string>${escapeXml(service.stdoutLogPath)}</string>`,
     "  <key>StandardErrorPath</key>",

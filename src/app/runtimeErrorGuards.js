@@ -1,6 +1,6 @@
 import process from "node:process";
 
-const REGISTERED_FLAG = Symbol.for("codex-discord-bridge.runtime-error-guards");
+const REGISTERED_FLAG = Symbol.for("agent-gateway.runtime-error-guards");
 
 export function isIgnorableDiscordGatewayError(error) {
   const message = String(error?.message ?? "");

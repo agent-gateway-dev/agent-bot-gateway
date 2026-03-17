@@ -1,11 +1,11 @@
 [Unit]
-Description=Codex Chat Bridge
+Description=Agent Gateway
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/codex-discord-bridge.env
+EnvironmentFile=/etc/agent-gateway.env
 WorkingDirectory=/
 ExecStart=/bin/bash -lc 'cd "$BRIDGE_ROOT" && exec ./scripts/restart-supervisor.sh -- "$NODE_BIN" ./scripts/start-with-proxy.mjs'
 Restart=always

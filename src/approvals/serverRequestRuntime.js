@@ -295,7 +295,7 @@ function isApprovalLikeServerRequestMethod(method) {
 }
 
 function buildUnsupportedToolCallResponse(originalMethod) {
-  const text = "Dynamic tool calls are not supported by codex-discord-bridge.";
+  const text = "Dynamic tool calls are not supported by agent-gateway.";
   const modern = {
     contentItems: [{ type: "inputText", text }],
     success: false

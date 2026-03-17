@@ -2,7 +2,7 @@
   "lockfileVersion": 1,
   "workspaces": {
     "": {
-      "name": "codex-discord-bridge",
+      "name": "agent-gateway",
       "dependencies": {
         "discord.js": "^14.20.0",
         "dotenv": "^16.6.1",

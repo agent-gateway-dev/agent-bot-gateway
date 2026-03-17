@@ -53,7 +53,7 @@ export async function runDoctorCommand(_args: string[], context: CliContext): Pr
   }
   checks.push({ name: "attachment_roots", ok: true, value: attachmentRootChecks });
 
-  const generalCwd = path.resolve(process.env.DISCORD_GENERAL_CWD ?? path.join("/tmp", "codex-discord-bridge", "general"));
+  const generalCwd = path.resolve(process.env.DISCORD_GENERAL_CWD ?? path.join("/tmp", "agent-gateway", "general"));
   const generalCwdOk = await ensureDirectory(generalCwd);
   checks.push({ name: "general_cwd_writable", ok: generalCwdOk, value: generalCwd });
   if (!generalCwdOk) {

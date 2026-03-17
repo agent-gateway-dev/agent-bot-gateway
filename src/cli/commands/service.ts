@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { CliCommandResult, CliContext } from "../../types/events.js";
-import { renderLaunchdPlist, renderManagedLaunchdWrapper, resolveLaunchdServiceInfo } from "../paths.js";
+import { renderLaunchdPlist, resolveLaunchdServiceInfo } from "../paths.js";
 
 interface LaunchctlResult {
   code: number | null;
@@ -166,14 +166,8 @@ function truncateError(error: unknown, limit = 400): string {
 }
 
 async function installLaunchdPlist(service: ReturnType<typeof resolveLaunchdServiceInfo>): Promise<void> {
-  await fs.mkdir(service.supportRoot, { recursive: true });
-  const supervisorContent = await fs.readFile(service.sourceSupervisorPath, "utf8");
-  await fs.writeFile(service.managedSupervisorPath, supervisorContent, "utf8");
-  await fs.chmod(service.managedSupervisorPath, 0o755);
-
-  const wrapperContent = renderManagedLaunchdWrapper(service);
-  await fs.writeFile(service.managedWrapperPath, wrapperContent, "utf8");
-  await fs.chmod(service.managedWrapperPath, 0o755);
+  await fs.readFile(service.sourceWrapperPath, "utf8");
+  await fs.readFile(service.sourceSupervisorPath, "utf8");
 
   const plistContent = renderLaunchdPlist(service);
   await fs.mkdir(path.dirname(service.installedPlistPath), { recursive: true });

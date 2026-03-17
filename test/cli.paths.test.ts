@@ -35,7 +35,7 @@ describe("cli paths", () => {
 <key>StandardOutPath</key><string>/tmp/custom.out.log</string>
 <key>StandardErrorPath</key><string>/tmp/custom.err.log</string>
 </dict></plist>`;
-    await fs.writeFile(path.join(cwd, "com.codex.discord.bridge.plist"), plist, "utf8");
+    await fs.writeFile(path.join(cwd, "com.agent.gateway.plist"), plist, "utf8");
 
     const runtimePaths = resolveCliRuntimePaths(cwd);
     expect(runtimePaths.stdoutLogPath).toBe(path.resolve("/tmp/custom.out.log"));
@@ -49,7 +49,7 @@ describe("cli paths", () => {
     tempDirs.push(fakeHome);
     process.env.HOME = fakeHome;
     await fs.writeFile(
-      path.join(cwd, "com.codex.discord.bridge.plist"),
+      path.join(cwd, "com.agent.gateway.plist"),
       "<plist><dict><key>StandardOutPath</key><string>/tmp/plist.out.log</string></dict></plist>",
       "utf8"
     );
@@ -70,17 +70,17 @@ describe("cli paths", () => {
 
     await fs.mkdir(path.join(fakeHome, "Library", "LaunchAgents"), { recursive: true });
     await fs.writeFile(
-      resolveInstalledLaunchdPlistPath("com.codex.discord.bridge"),
+      resolveInstalledLaunchdPlistPath("com.agent.gateway"),
       `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
-<key>Label</key><string>com.codex.discord.bridge</string>
+<key>Label</key><string>com.agent.gateway</string>
 <key>StandardOutPath</key><string>/tmp/installed.out.log</string>
 <key>StandardErrorPath</key><string>/tmp/installed.err.log</string>
 </dict></plist>`,
       "utf8"
     );
     await fs.writeFile(
-      path.join(cwd, "com.codex.discord.bridge.plist"),
+      path.join(cwd, "com.agent.gateway.plist"),
       "<plist><dict><key>StandardOutPath</key><string>/tmp/source.out.log</string></dict></plist>",
       "utf8"
     );
@@ -88,5 +88,21 @@ describe("cli paths", () => {
     const runtimePaths = resolveCliRuntimePaths(cwd);
     expect(runtimePaths.stdoutLogPath).toBe(path.resolve("/tmp/installed.out.log"));
     expect(runtimePaths.stderrLogPath).toBe(path.resolve("/tmp/installed.err.log"));
+  });
+
+  test("falls back to legacy launchd plist names when present", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "codex-bridge-cli-paths-"));
+    tempDirs.push(cwd);
+    const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "codex-bridge-cli-home-"));
+    tempDirs.push(fakeHome);
+    process.env.HOME = fakeHome;
+    await fs.writeFile(
+      path.join(cwd, "com.codex.discord.bridge.plist"),
+      "<plist><dict><key>StandardOutPath</key><string>/tmp/legacy.out.log</string></dict></plist>",
+      "utf8"
+    );
+
+    const runtimePaths = resolveCliRuntimePaths(cwd);
+    expect(runtimePaths.stdoutLogPath).toBe(path.resolve("/tmp/legacy.out.log"));
   });
 });

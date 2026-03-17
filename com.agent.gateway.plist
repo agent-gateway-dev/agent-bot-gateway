@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/Users/aias/.bun/bin:/Users/aias/.nvm/versions/node/v22.22.0/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.agent.gateway</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Volumes/data/agent-bot-gateway/scripts/launchd-wrapper.sh</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/tmp/agent-gateway.err.log</string>
+	<key>StandardOutPath</key>
+	<string>/tmp/agent-gateway.out.log</string>
+	<key>ThrottleInterval</key>
+	<integer>15</integer>
+	<key>WorkingDirectory</key>
+	<string>/Volumes/data/agent-bot-gateway</string>
+</dict>
+</plist>

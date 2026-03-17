@@ -1,8 +1,8 @@
-# Codex Discord Bridge
+# Agent Gateway
 
-[![Codex Discord Bridge Hero](public/images/cover_new.png)](https://youtu.be/RRF-F5jDS50)
+[![Agent Gateway Hero](public/images/cover_new.png)](https://youtu.be/RRF-F5jDS50)
 
-Personal Discord bridge for Codex app-server.
+Agent gateway for Codex app-server.
 
 ## What It Does
 
@@ -238,8 +238,8 @@ bun run start:backend
 ### Verify
 
 ```bash
-bun run cli doctor
-bun run cli status
+agent-gateway doctor
+agent-gateway status
 curl http://127.0.0.1:8788/healthz
 curl -i http://127.0.0.1:8788/readyz
 ```
@@ -537,7 +537,7 @@ This is the shortest reliable way to bring Feishu online with the current bridge
 7. Start or restart the bridge.
 
    ```bash
-   bun run cli restart "enable feishu"
+   agent-gateway restart "enable feishu"
    ```
 
 8. Add the Feishu bot into the target chat.
@@ -583,13 +583,13 @@ This is the shortest reliable way to bring Feishu online with the current bridge
 12. Restart again after editing `.env` or `config/channels.json`.
 
     ```bash
-    bun run cli restart "update feishu mappings"
+    agent-gateway restart "update feishu mappings"
     ```
 
 13. Verify the runtime.
 
     ```bash
-    bun run cli status
+    agent-gateway status
     curl http://127.0.0.1:8788/healthz
     curl -i http://127.0.0.1:8788/readyz
     ```
@@ -631,41 +631,42 @@ This is the shortest reliable way to bring Feishu online with the current bridge
 
 ### macOS `launchd`
 
-The repo includes [com.codex.discord.bridge.plist](com.codex.discord.bridge.plist).
+The repo includes [com.agent.gateway.plist](com.agent.gateway.plist).
 
 Notes:
 
-- `bun run cli start` now syncs a generated plist into `~/Library/LaunchAgents/<label>.plist` before calling `launchctl`
+- `agent-gateway start` now syncs a generated plist into `~/Library/LaunchAgents/<label>.plist` before calling `launchctl`
 - The checked-in plist is treated as a source template for label/log defaults; the installed LaunchAgent always points at the current repo root
-- If you deploy on another machine, edit `WorkingDirectory`, `ProgramArguments`, `HOME`, and `PATH`
-- `bun run cli start` bootstraps, enables, and kickstarts the launch agent
-- `bun run cli stop` bootouts the launch agent
-- `bun run cli status` reads heartbeat and runtime paths
-- `bun run cli logs` tails the active log files
+- The generated LaunchAgent uses `/bin/bash -lc 'cd <repo> && exec node ./scripts/start-with-proxy.mjs'`, so startup stays pinned to the current repo root even if the repo moves
+- If you deploy on another machine, update the repo path and ensure `PATH` includes your Node binary
+- `agent-gateway start` bootstraps, enables, and kickstarts the launch agent
+- `agent-gateway stop` bootouts the launch agent
+- `agent-gateway status` reads heartbeat and runtime paths
+- `agent-gateway logs` tails the active log files
 
 Default log files:
 
 ```bash
-/tmp/codex-discord-bridge.out.log
-/tmp/codex-discord-bridge.err.log
+/tmp/agent-gateway.out.log
+/tmp/agent-gateway.err.log
 ```
 
 ### Linux `systemd`
 
 Example files:
 
-- `deploy/systemd/codex-discord-bridge.service`
-- `deploy/systemd/codex-discord-bridge.env.example`
+- `deploy/systemd/agent-gateway.service`
+- `deploy/systemd/agent-gateway.env.example`
 
 Typical install:
 
 ```bash
-sudo cp deploy/systemd/codex-discord-bridge.service /etc/systemd/system/
-sudo cp deploy/systemd/codex-discord-bridge.env.example /etc/codex-discord-bridge.env
-sudoedit /etc/codex-discord-bridge.env
+sudo cp deploy/systemd/agent-gateway.service /etc/systemd/system/
+sudo cp deploy/systemd/agent-gateway.env.example /etc/agent-gateway.env
+sudoedit /etc/agent-gateway.env
 sudo systemctl daemon-reload
-sudo systemctl enable --now codex-discord-bridge
-sudo systemctl status codex-discord-bridge
+sudo systemctl enable --now agent-gateway
+sudo systemctl status agent-gateway
 ```
 
 Before enabling, set at least:
@@ -678,21 +679,19 @@ Before enabling, set at least:
 
 ## Operator CLI
 
-- `bun run cli status` shows runtime paths, binding count, and heartbeat status.
-- `bun run cli capabilities` shows platform + agent capability matrix (from env + `channels.json`).
+- `agent-gateway status` shows runtime paths, binding count, and heartbeat status.
+- `agent-gateway capabilities` shows platform + agent capability matrix (from env + `channels.json`).
   - Add `--compact` to include concise human-readable rows in output.
-- `bun run cli start` bootstraps/enables/kickstarts the launchd service (`com.codex.discord.bridge` by default).
-- `bun run cli stop` stops the launchd service via `bootout`.
-- `bun run cli logs` tails active bridge stdout/stderr logs (same paths used by launchd when configured).
+- `agent-gateway start` bootstraps/enables/kickstarts the launchd service (`com.agent.gateway` by default).
+- `agent-gateway stop` stops the launchd service via `bootout`.
+- `agent-gateway logs` tails active bridge stdout/stderr logs (same paths used by launchd when configured).
   - Supports `--clear` and `--since <10m|2h|iso>` for faster incident triage.
-- `bun run cli config-validate` validates channel/env config and reports effective defaults.
-- `bun run cli doctor` runs operational diagnostics (token/writable paths/attachment roots/default agent validity/platform adapter integrity).
-- `bun run cli reload [reason]` writes a restart intent file for host-managed supervisors.
-- `bun run cli restart [reason]` alias for `reload`.
+- `agent-gateway config-validate` validates channel/env config and reports effective defaults.
+- `agent-gateway doctor` runs operational diagnostics (token/writable paths/attachment roots/default agent validity/platform adapter integrity).
+- `agent-gateway reload [reason]` writes a restart intent file for host-managed supervisors.
+- `agent-gateway restart [reason]` alias for `reload`.
 - `scripts/restart-supervisor.sh -- bun run start` runs a host-side process loop that watches `data/restart-request.json` and restarts the bridge externally (with throttle/backoff).
-- Optional global command from any directory:
-  - Run `npm link` once in this repo.
-  - Then use `dc-bridge start`, `dc-bridge stop`, `dc-bridge status`, `dc-bridge logs`, `dc-bridge restart "manual restart"`, etc.
+- `bun run cli ...` remains available as a repo-local fallback, but the preferred operator command is `agent-gateway`.
 
 ## Stability Checks
 
@@ -717,7 +716,7 @@ Before enabling, set at least:
 - Restart acknowledgement file defaults to `data/restart-ack.json`
 - Restart notice state defaults to `data/restart-discord-notice.json`
 - In-flight turn recovery defaults to `data/inflight-turns.json`
-- `bun run cli status` reports heartbeat age, active turns, pending approvals, and log paths
+- `agent-gateway status` reports heartbeat age, active turns, pending approvals, and log paths
 
 `/healthz` and `/readyz` are startup-oriented operational endpoints:
 
@@ -762,7 +761,7 @@ Before enabling, set at least:
 - If `!initrepo` fails, confirm `WORKSPACE_ROOT` is set and writable
 - If Feishu webhook requests return `403`, verify `FEISHU_VERIFICATION_TOKEN`
 - If you do not know the correct Feishu identifiers yet, leave `FEISHU_ALLOWED_OPEN_IDS` unset temporarily and send `/where` in the target chat
-- If `/readyz` returns `503`, check `bun run cli logs` for startup failures
+- If `/readyz` returns `503`, check `agent-gateway logs` for startup failures
 - If Discord access requires a local proxy, set `HTTP_PROXY` and `HTTPS_PROXY` and use `bun run start:backend`
 
 ## Repository Layout

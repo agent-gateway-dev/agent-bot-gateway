@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { HttpsProxyAgent } from "https-proxy-agent";
 
-const WS_PROXY_PATCHED = Symbol.for("codex-discord-bridge.ws-proxy-patched");
+const WS_PROXY_PATCHED = Symbol.for("agent-gateway.ws-proxy-patched");
 
 export function patchWsModuleForProxy(options = {}) {
   const {

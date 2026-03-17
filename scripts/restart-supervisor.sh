@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Host-managed restart supervisor for codex-discord-bridge.
+# Host-managed restart supervisor for agent-gateway.
 # Watches a restart-request signal file and restarts the bridge process.
 #
 # Usage:

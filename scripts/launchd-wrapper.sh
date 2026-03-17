@@ -8,4 +8,4 @@ export PATH="/opt/homebrew/bin:/Users/aias/.bun/bin:/Users/aias/.nvm/versions/no
 
 cd "${REPO_ROOT}"
 
-exec "${SCRIPT_DIR}/restart-supervisor.sh" -- /Users/aias/.nvm/versions/node/v22.22.0/bin/node "${SCRIPT_DIR}/start-with-proxy.mjs"
+exec /bin/bash "${SCRIPT_DIR}/restart-supervisor.sh" -- /Users/aias/.nvm/versions/node/v22.22.0/bin/node "${SCRIPT_DIR}/start-with-proxy.mjs"

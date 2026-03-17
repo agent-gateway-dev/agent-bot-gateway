@@ -31,7 +31,7 @@ export async function runLogsCommand(args: string[], context: CliContext): Promi
       fs.mkdirSync(path.dirname(logPath), { recursive: true });
       fs.writeFileSync(logPath, "");
     }
-    console.error(`[dc-bridge logs] cleared: ${uniqueTargetPaths.map((entry) => `'${entry}'`).join(", ")}`);
+    console.error(`[agent-gateway logs] cleared: ${uniqueTargetPaths.map((entry) => `'${entry}'`).join(", ")}`);
     if (!options.follow) {
       return {
         ok: true,
@@ -49,10 +49,10 @@ export async function runLogsCommand(args: string[], context: CliContext): Promi
   const existing = uniqueTargetPaths.filter((entry) => fs.existsSync(entry));
   if (existing.length === 0) {
     console.error(
-      `[dc-bridge logs] no log file exists yet. waiting on: ${uniqueTargetPaths.map((entry) => `'${entry}'`).join(", ")}`
+      `[agent-gateway logs] no log file exists yet. waiting on: ${uniqueTargetPaths.map((entry) => `'${entry}'`).join(", ")}`
     );
   } else {
-    console.error(`[dc-bridge logs] tailing: ${existing.map((entry) => `'${entry}'`).join(", ")}`);
+    console.error(`[agent-gateway logs] tailing: ${existing.map((entry) => `'${entry}'`).join(", ")}`);
   }
 
   if (options.since) {
@@ -68,7 +68,7 @@ export async function runLogsCommand(args: string[], context: CliContext): Promi
     }
     const matched = printLogsSince(uniqueTargetPaths, sinceDate);
     console.error(
-      `[dc-bridge logs] since ${sinceDate.toISOString()} matched ${matched} line${matched === 1 ? "" : "s"}`
+      `[agent-gateway logs] since ${sinceDate.toISOString()} matched ${matched} line${matched === 1 ? "" : "s"}`
     );
     if (!options.follow) {
       return {

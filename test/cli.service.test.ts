@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { runStartCommand, runStopCommand } from "../src/cli/commands/service.js";
@@ -8,6 +9,10 @@ import { resolveInstalledLaunchdPlistPath } from "../src/cli/paths.js";
 const tempDirs: string[] = [];
 const originalLaunchdLabel = process.env.DISCORD_LAUNCHD_LABEL;
 const originalHome = process.env.HOME;
+
+beforeEach(() => {
+  delete process.env.DISCORD_LAUNCHD_LABEL;
+});
 
 afterEach(async () => {
   process.env.DISCORD_LAUNCHD_LABEL = originalLaunchdLabel;
@@ -20,10 +25,17 @@ afterEach(async () => {
 async function seedLaunchdSupportFiles(cwd: string): Promise<void> {
   await fs.mkdir(path.join(cwd, "scripts"), { recursive: true });
   await fs.writeFile(
+    path.join(cwd, "scripts", "launchd-wrapper.sh"),
+    "#!/usr/bin/env bash\nset -euo pipefail\nexec /bin/bash ./scripts/restart-supervisor.sh -- /usr/bin/node ./scripts/start-with-proxy.mjs\n",
+    "utf8"
+  );
+  await fs.writeFile(
     path.join(cwd, "scripts", "restart-supervisor.sh"),
     "#!/usr/bin/env bash\n# Host-managed restart supervisor\n",
     "utf8"
   );
+  await fs.chmod(path.join(cwd, "scripts", "launchd-wrapper.sh"), 0o755);
+  await fs.chmod(path.join(cwd, "scripts", "restart-supervisor.sh"), 0o755);
 }
 
 describe("cli service commands", () => {
@@ -34,8 +46,8 @@ describe("cli service commands", () => {
     tempDirs.push(fakeHome);
     process.env.HOME = fakeHome;
     await fs.writeFile(
-      path.join(cwd, "com.codex.discord.bridge.plist"),
-      "<plist><dict><key>Label</key><string>com.codex.discord.bridge</string></dict></plist>",
+      path.join(cwd, "com.agent.gateway.plist"),
+      "<plist><dict><key>Label</key><string>com.agent.gateway</string></dict></plist>",
       "utf8"
     );
     await seedLaunchdSupportFiles(cwd);
@@ -47,21 +59,20 @@ describe("cli service commands", () => {
     });
 
     const domain = `gui/${typeof process.getuid === "function" ? process.getuid() : 0}`;
-    const installedPlistPath = resolveInstalledLaunchdPlistPath("com.codex.discord.bridge");
-    const supportRoot = path.join(fakeHome, "Library", "Application Support", "CodexDiscordBridge", "com.codex.discord.bridge");
-    const managedWrapperPath = path.join(supportRoot, "launchd-wrapper.sh");
-    const managedSupervisorPath = path.join(supportRoot, "restart-supervisor.sh");
+    const installedPlistPath = resolveInstalledLaunchdPlistPath("com.agent.gateway");
     expect(result.ok).toBe(true);
     expect(result.message).toBe("service started");
     expect(calls).toEqual([
       ["bootstrap", domain, installedPlistPath],
-      ["enable", `${domain}/com.codex.discord.bridge`],
-      ["kickstart", "-k", `${domain}/com.codex.discord.bridge`]
+      ["enable", `${domain}/com.agent.gateway`],
+      ["kickstart", "-k", `${domain}/com.agent.gateway`]
     ]);
-    expect(await fs.readFile(installedPlistPath, "utf8")).toContain("/bin/bash");
-    expect(await fs.readFile(installedPlistPath, "utf8")).toContain(managedWrapperPath);
-    expect(await fs.readFile(managedWrapperPath, "utf8")).toContain(path.join(cwd, "scripts/start-with-proxy.mjs"));
-    expect(await fs.readFile(managedSupervisorPath, "utf8")).toContain("Host-managed restart supervisor");
+    const installedPlist = await fs.readFile(installedPlistPath, "utf8");
+    expect(installedPlist).toContain("<string>/bin/bash</string>");
+    expect(installedPlist).toContain("<string>-lc</string>");
+    expect(installedPlist).toContain(`cd &apos;${cwd}&apos;`);
+    expect(installedPlist).toContain("./scripts/start-with-proxy.mjs");
+    expect(fsSync.existsSync(path.join(fakeHome, "Library", "Application Support", "AgentGateway", "com.agent.gateway"))).toBe(false);
   });
 
   test("start tolerates already-loaded bootstrap responses", async () => {
@@ -102,7 +113,7 @@ describe("cli service commands", () => {
 
     expect(result.ok).toBe(false);
     expect(result.message).toBe("failed to prepare launchd service files");
-    expect(String(result.details?.error ?? "")).toContain("restart-supervisor.sh");
+    expect(String(result.details?.error ?? "")).toContain("launchd-wrapper.sh");
     expect(calls).toEqual([]);
   });
 
@@ -133,11 +144,11 @@ describe("cli service commands", () => {
       [
         "bootstrap",
         `gui/${typeof process.getuid === "function" ? process.getuid() : 0}`,
-        resolveInstalledLaunchdPlistPath("com.codex.discord.bridge")
+        resolveInstalledLaunchdPlistPath("com.agent.gateway")
       ],
-      ["print", `gui/${typeof process.getuid === "function" ? process.getuid() : 0}/com.codex.discord.bridge`],
-      ["enable", `gui/${typeof process.getuid === "function" ? process.getuid() : 0}/com.codex.discord.bridge`],
-      ["kickstart", "-k", `gui/${typeof process.getuid === "function" ? process.getuid() : 0}/com.codex.discord.bridge`]
+      ["print", `gui/${typeof process.getuid === "function" ? process.getuid() : 0}/com.agent.gateway`],
+      ["enable", `gui/${typeof process.getuid === "function" ? process.getuid() : 0}/com.agent.gateway`],
+      ["kickstart", "-k", `gui/${typeof process.getuid === "function" ? process.getuid() : 0}/com.agent.gateway`]
     ]);
   });
 
@@ -148,8 +159,8 @@ describe("cli service commands", () => {
     tempDirs.push(fakeHome);
     process.env.HOME = fakeHome;
     await fs.writeFile(
-      path.join(cwd, "com.codex.discord.bridge.plist"),
-      "<plist><dict><key>Label</key><string>com.codex.discord.bridge</string></dict></plist>",
+      path.join(cwd, "com.agent.gateway.plist"),
+      "<plist><dict><key>Label</key><string>com.agent.gateway</string></dict></plist>",
       "utf8"
     );
     await seedLaunchdSupportFiles(cwd);
@@ -171,10 +182,10 @@ describe("cli service commands", () => {
     const domain = `gui/${typeof process.getuid === "function" ? process.getuid() : 0}`;
     expect(result.ok).toBe(true);
     expect(calls).toEqual([
-      ["bootstrap", domain, resolveInstalledLaunchdPlistPath("com.codex.discord.bridge")],
-      ["enable", `${domain}/com.codex.discord.bridge`],
-      ["kickstart", "-k", `${domain}/com.codex.discord.bridge`],
-      ["print", `${domain}/com.codex.discord.bridge`]
+      ["bootstrap", domain, resolveInstalledLaunchdPlistPath("com.agent.gateway")],
+      ["enable", `${domain}/com.agent.gateway`],
+      ["kickstart", "-k", `${domain}/com.agent.gateway`],
+      ["print", `${domain}/com.agent.gateway`]
     ]);
   });
 

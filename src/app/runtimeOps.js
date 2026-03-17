@@ -196,7 +196,7 @@ export function createRuntimeOps(deps) {
       return false;
     }
     return (
-      /\b(restart (yourself|the bot|bot)|please restart|restart with the cli|cli commands|dc-bridge restart)\b/.test(
+      /\b(restart (yourself|the bot|bot)|please restart|restart with the cli|cli commands|agent-gateway restart)\b/.test(
         text
       ) && text.length <= 220
     );

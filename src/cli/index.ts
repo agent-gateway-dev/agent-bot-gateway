@@ -23,7 +23,8 @@ const commands: Record<string, CliCommand["run"]> = {
 function printUsage(): void {
   console.log(
     [
-      "Usage: bun run src/cli/index.ts <command>",
+      "Usage: agent-gateway <command>",
+      "       bun run cli <command>",
       "",
       "Commands:",
       "  status            Show runtime paths, binding count, and heartbeat summary",

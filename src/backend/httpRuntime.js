@@ -112,7 +112,7 @@ export function createBackendHttpRuntime(deps) {
     if (method === "GET" && pathname === "/") {
       writeJson(response, 200, {
         ok: true,
-        service: "codex-chat-bridge",
+        service: "agent-gateway",
         ready: readiness.ready,
         endpoints: [
           "/healthz",
