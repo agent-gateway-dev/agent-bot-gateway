@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runStartCommand, runStopCommand } from "../src/cli/commands/service.js";
+import { runRestartCommand, runStartCommand, runStopCommand } from "../src/cli/commands/service.js";
 import { resolveInstalledLaunchdPlistPath } from "../src/cli/paths.js";
 
 const tempDirs: string[] = [];
@@ -38,6 +38,27 @@ async function seedLaunchdSupportFiles(cwd: string): Promise<void> {
   await fs.chmod(path.join(cwd, "scripts", "restart-supervisor.sh"), 0o755);
 }
 
+function createProcessManager(entries: Array<{ pid: number; ppid: number | null; command: string }>) {
+  const alive = new Set(entries.map((entry) => entry.pid));
+  const killed: Array<{ pid: number; signal: string }> = [];
+  return {
+    killed,
+    manager: {
+      list: async () =>
+        entries.filter((entry) => alive.has(entry.pid)).map((entry) => ({
+          pid: entry.pid,
+          ppid: entry.ppid,
+          command: entry.command
+        })),
+      kill: async (pid: number, signal = "SIGTERM") => {
+        killed.push({ pid, signal });
+        alive.delete(pid);
+      },
+      sleep: async () => {}
+    }
+  };
+}
+
 describe("cli service commands", () => {
   test("start command bootstraps/enables/kickstarts service", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-service-start-"));
@@ -56,7 +77,7 @@ describe("cli service commands", () => {
     const result = await runStartCommand([], { cwd, now: new Date() }, async (args) => {
       calls.push(args);
       return { code: 0, stdout: "", stderr: "" };
-    });
+    }, createProcessManager([]).manager);
 
     const domain = `gui/${typeof process.getuid === "function" ? process.getuid() : 0}`;
     const installedPlistPath = resolveInstalledLaunchdPlistPath("com.agent.gateway");
@@ -88,11 +109,11 @@ describe("cli service commands", () => {
     const result = await runStartCommand([], { cwd, now: new Date() }, async (args) => {
       calls.push(args);
       invocation += 1;
-      if (invocation === 2) {
+      if (invocation === 4) {
         return { code: 5, stdout: "", stderr: "service already loaded" };
       }
       return { code: 0, stdout: "", stderr: "" };
-    });
+    }, createProcessManager([]).manager);
 
     expect(result.ok).toBe(true);
     expect(calls.length).toBe(3);
@@ -109,7 +130,7 @@ describe("cli service commands", () => {
     const result = await runStartCommand([], { cwd, now: new Date() }, async (args) => {
       calls.push(args);
       return { code: 0, stdout: "", stderr: "" };
-    });
+    }, createProcessManager([]).manager);
 
     expect(result.ok).toBe(false);
     expect(result.message).toBe("failed to prepare launchd service files");
@@ -137,7 +158,7 @@ describe("cli service commands", () => {
         return { code: 0, stdout: "service loaded", stderr: "" };
       }
       return { code: 0, stdout: "", stderr: "" };
-    });
+    }, createProcessManager([]).manager);
 
     expect(result.ok).toBe(true);
     expect(calls).toEqual([
@@ -177,7 +198,7 @@ describe("cli service commands", () => {
         return { code: 0, stdout: "service loaded", stderr: "" };
       }
       return { code: 0, stdout: "", stderr: "" };
-    });
+    }, createProcessManager([]).manager);
 
     const domain = `gui/${typeof process.getuid === "function" ? process.getuid() : 0}`;
     expect(result.ok).toBe(true);
@@ -195,15 +216,75 @@ describe("cli service commands", () => {
 
     const result = await runStopCommand([], { cwd, now: new Date() }, async () => {
       return { code: 3, stdout: "", stderr: "Could not find service" };
-    });
+    }, createProcessManager([]).manager);
 
     expect(result.ok).toBe(true);
     expect(result.message).toBe("service stopped");
   });
 
-  test("start/stop reject unexpected args", async () => {
+  test("restart command kickstarts service and reports restart semantics", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-service-restart-"));
+    tempDirs.push(cwd);
+    const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-service-home-"));
+    tempDirs.push(fakeHome);
+    process.env.HOME = fakeHome;
+    await seedLaunchdSupportFiles(cwd);
+    const calls: string[][] = [];
+
+    const result = await runRestartCommand([], { cwd, now: new Date() }, async (args) => {
+      calls.push(args);
+      return { code: 0, stdout: "", stderr: "" };
+    }, createProcessManager([]).manager);
+
+    const domain = `gui/${typeof process.getuid === "function" ? process.getuid() : 0}`;
+    expect(result.ok).toBe(true);
+    expect(result.message).toBe("service restarted");
+    expect(calls).toEqual([
+      ["bootout", `${domain}/com.agent.gateway`],
+      ["enable", `${domain}/com.agent.gateway`],
+      ["bootstrap", domain, resolveInstalledLaunchdPlistPath("com.agent.gateway")],
+      ["kickstart", "-k", `${domain}/com.agent.gateway`]
+    ]);
+  });
+
+  test("restart reclaims competing supervisor and child processes before relaunch", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-service-restart-cleanup-"));
+    tempDirs.push(cwd);
+    const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-service-home-"));
+    tempDirs.push(fakeHome);
+    process.env.HOME = fakeHome;
+    await seedLaunchdSupportFiles(cwd);
+    const calls: string[][] = [];
+    const processes = createProcessManager([
+      {
+        pid: 101,
+        ppid: 1,
+        command: `bash /tmp/restart-supervisor-v2.sh -- /usr/bin/node ${path.join(cwd, "scripts/start-with-proxy.mjs")}`
+      },
+      {
+        pid: 102,
+        ppid: 101,
+        command: `/usr/bin/node ${path.join(cwd, "scripts/start-with-proxy.mjs")}`
+      }
+    ]);
+
+    const result = await runRestartCommand([], { cwd, now: new Date() }, async (args) => {
+      calls.push(args);
+      return { code: 0, stdout: "", stderr: "" };
+    }, processes.manager);
+
+    expect(result.ok).toBe(true);
+    expect(result.details?.reclaimedPids).toEqual([101]);
+    expect(processes.killed).toEqual([{ pid: 101, signal: "SIGTERM" }]);
+  });
+
+  test("restart/start/stop reject unexpected args", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-service-args-"));
     tempDirs.push(cwd);
+
+    const restart = await runRestartCommand(["now"], { cwd, now: new Date() });
+    expect(restart.ok).toBe(false);
+    expect(restart.message).toContain("does not accept arguments");
 
     const start = await runStartCommand(["now"], { cwd, now: new Date() });
     expect(start.ok).toBe(false);

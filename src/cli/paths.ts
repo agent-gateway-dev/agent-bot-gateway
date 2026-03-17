@@ -4,9 +4,7 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 
 const DEFAULT_LAUNCHD_LABEL = "com.agent.gateway";
-const LEGACY_LAUNCHD_LABEL = "com.codex.discord.bridge";
 const DEFAULT_SOURCE_PLIST_FILENAME = "com.agent.gateway.plist";
-const LEGACY_SOURCE_PLIST_FILENAME = "com.codex.discord.bridge.plist";
 const DEFAULT_STDOUT_LOG_PATH = "/tmp/agent-gateway.out.log";
 const DEFAULT_STDERR_LOG_PATH = "/tmp/agent-gateway.err.log";
 
@@ -152,10 +150,7 @@ function readLaunchdLogPaths(cwd: string): { stdoutLogPath: string | null; stder
 }
 
 function readLaunchdSourcePlistRaw(cwd: string): string | null {
-  const sourceCandidatePaths = [
-    path.resolve(cwd, DEFAULT_SOURCE_PLIST_FILENAME),
-    path.resolve(cwd, LEGACY_SOURCE_PLIST_FILENAME)
-  ];
+  const sourceCandidatePaths = [path.resolve(cwd, DEFAULT_SOURCE_PLIST_FILENAME)];
   for (const plistPath of sourceCandidatePaths) {
     const raw = safeReadFile(plistPath);
     if (raw) {
@@ -166,18 +161,14 @@ function readLaunchdSourcePlistRaw(cwd: string): string | null {
 }
 
 function readLaunchdPlistRaw(cwd: string): string | null {
-  const sourceCandidatePaths = [
-    path.resolve(cwd, DEFAULT_SOURCE_PLIST_FILENAME),
-    path.resolve(cwd, LEGACY_SOURCE_PLIST_FILENAME)
-  ];
+  const sourceCandidatePaths = [path.resolve(cwd, DEFAULT_SOURCE_PLIST_FILENAME)];
   const sourceRaw = readLaunchdSourcePlistRaw(cwd);
   const sourceLabel = sourceRaw ? extractPlistStringValue(sourceRaw, "Label") : null;
   const labelFromEnv = String(process.env.DISCORD_LAUNCHD_LABEL ?? "").trim();
   const preferredLabels = [
     labelFromEnv,
     sourceLabel,
-    DEFAULT_LAUNCHD_LABEL,
-    LEGACY_LAUNCHD_LABEL
+    DEFAULT_LAUNCHD_LABEL
   ].filter((value, index, entries): value is string => Boolean(value) && entries.indexOf(value) === index);
   const preferredPaths = [
     ...preferredLabels.map((label) => resolveInstalledLaunchdPlistPath(label)),

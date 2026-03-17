@@ -59,4 +59,18 @@ describe("cli status command", () => {
       await fs.rm(cwd, { recursive: true, force: true });
     }
   });
+
+  test("status rejects unexpected args", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-status-"));
+    try {
+      const result = await runStatusCommand(["extra"], { cwd, now: new Date() }, async () => {
+        throw new Error("runner should not be called");
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.message).toBe("status command does not accept arguments");
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

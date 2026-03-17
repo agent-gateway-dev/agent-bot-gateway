@@ -72,7 +72,7 @@ describe("feishu context", () => {
     });
   });
 
-  test("resolves unbound chat as read-only context when unbound mode is open", () => {
+  test("resolves unbound chat as writable repo context when unbound mode is open", () => {
     const routeId = makeFeishuRouteId("oc_unbound");
     const context = resolveFeishuContext(
       {
@@ -101,9 +101,9 @@ describe("feishu context", () => {
         cwd: "/tmp/open-feishu",
         resolvedModel: "gpt-5.3-codex",
         bindingKind: "unbound-open",
-        mode: "general",
-        sandboxMode: "read-only",
-        allowFileWrites: false
+        mode: "repo",
+        sandboxMode: "workspace-write",
+        allowFileWrites: true
       }
     });
   });

@@ -13,10 +13,20 @@ interface LaunchctlResult {
 type LaunchctlRunner = (args: string[]) => Promise<LaunchctlResult>;
 
 export async function runStatusCommand(
-  _args: string[],
+  args: string[],
   context: CliContext,
   runner: LaunchctlRunner = runLaunchctl
 ): Promise<CliCommandResult> {
+  if (args.length > 0) {
+    return {
+      ok: false,
+      message: "status command does not accept arguments",
+      details: {
+        usage: "status"
+      }
+    };
+  }
+
   const paths = resolveCliRuntimePaths(context.cwd);
   const service = resolveLaunchdServiceInfo(context.cwd);
   const packagePath = path.resolve(context.cwd, "package.json");

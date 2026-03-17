@@ -259,6 +259,7 @@ curl -i http://127.0.0.1:8788/readyz
 ### Feishu
 
 - New chats are accepted by default through the open unbound workspace unless you explicitly set `FEISHU_UNBOUND_CHAT_MODE=strict`.
+- Open unbound chats inherit the configured sandbox mode, so they can perform the same writes and command execution as bound repo chats.
 - Plain text in a mapped repo chat or an open unbound chat is treated as a prompt.
 - Commands use leading slash text such as `/status`, `/ask`, `/approve`.
 - `/setpath /absolute/path` rebinds the current chat to an existing repo path and clears the old Codex thread binding.
@@ -302,7 +303,7 @@ Approval buttons are available on Discord when approvals are enabled.
 
 - Default approval policy is `never`.
 - Default sandbox mode is `workspace-write`.
-- Repo channels and mapped Feishu chats inherit the configured sandbox mode.
+- Repo channels, mapped Feishu chats, and open unbound Feishu chats inherit the configured sandbox mode.
 - Discord `#general` and Feishu general chat force `read-only` mode and disable file writes.
 - If you want interactive approvals, set `CODEX_APPROVAL_POLICY` to `untrusted`, `on-failure`, or `on-request`.
 - Unsupported dynamic tool-call requests are rejected with a fallback response.
@@ -613,6 +614,7 @@ This is the shortest reliable way to bring Feishu online with the current bridge
 - Feishu chats are config-driven. They are not auto-created and not auto-discovered from Codex.
 - Feishu chats can also be rebound in-place with `/setpath /absolute/path`, which updates `config/channels.json`.
 - `FEISHU_GENERAL_CHAT_ID` creates one read-only general chat, similar to Discord `#general`.
+- `FEISHU_UNBOUND_CHAT_MODE=open` accepts unmapped Feishu chats immediately and grants the same sandbox/file-write capability as configured repo chats.
 - If `FEISHU_REQUIRE_MENTION_IN_GROUP=1`, plain prompts in group chats need an `@mention`; slash-style commands such as `/status` still work.
 - Feishu now supports inbound image messages, segmented streaming text output, plus outbound image and file uploads. Unsupported outbound attachment types still fall back to text notices.
 - Segmented streaming replies are disabled by default. Set `FEISHU_SEGMENTED_STREAMING=1` to enable them.

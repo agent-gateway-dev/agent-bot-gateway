@@ -163,8 +163,8 @@ describe("feishu runtime", () => {
     expect(replies.length).toBe(1);
     expect(replies[0]).toContain("binding: `unbound-open`");
     expect(replies[0]).toContain("cwd: `/tmp/open-feishu`");
-    expect(replies[0]).toContain("sandbox mode: `read-only`");
-    expect(replies[0]).toContain("file writes: `disabled`");
+    expect(replies[0]).toContain("sandbox mode: `workspace-write`");
+    expect(replies[0]).toContain("file writes: `enabled`");
   });
 
   test("routes /status commands through the shared command handler", async () => {
@@ -344,6 +344,100 @@ describe("feishu runtime", () => {
       {
         repoChannelId: routeId,
         promptText: "请帮我看一下这个仓库"
+      }
+    ]);
+  });
+
+  test("expands bare numeric replies using the latest numbered bot message", async () => {
+    const jobs: Array<{ repoChannelId: string; promptText: string }> = [];
+    const routeId = makeFeishuRouteId("oc_repo_quick_reply_1");
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/tenant_access_token/internal")) {
+        return new Response(JSON.stringify({ code: 0, tenant_access_token: "tenant-token", expire: 7200 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({ code: 0, data: { message_id: `om_reply_${Math.random().toString(36).slice(2, 8)}` } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    };
+
+    const runtime = createFeishuRuntime({
+      config: {
+        defaultModel: "gpt-5.3-codex",
+        sandboxMode: "workspace-write",
+        allowedFeishuUserIds: []
+      },
+      runtimeEnv: {
+        feishuEnabled: true,
+        feishuAppId: "cli_test",
+        feishuAppSecret: "secret",
+        feishuVerificationToken: "",
+        feishuPort: 8788,
+        feishuHost: "127.0.0.1",
+        feishuWebhookPath: "/feishu/events",
+        feishuGeneralChatId: "",
+        feishuGeneralCwd: "/tmp/general",
+        feishuRequireMentionInGroup: false
+      },
+      getChannelSetups: () => ({
+        [routeId]: {
+          cwd: "/tmp/repo-quick-reply",
+          model: "gpt-5.3-codex"
+        }
+      }),
+      runManagedRouteCommand: async () => {},
+      getHelpText: () => "help text",
+      isCommandSupportedForPlatform: () => false,
+      handleCommand: async () => {},
+      runtimeAdapters: {
+        buildTurnInputFromMessage: async (_message: unknown, text: string) => [{ type: "text", text }],
+        enqueuePrompt: (repoChannelId: string, job: { inputItems: Array<{ text: string }> }) => {
+          jobs.push({ repoChannelId, promptText: job.inputItems[0]?.text ?? "" });
+        }
+      },
+      safeReply: async () => null
+    });
+
+    const channel = await runtime.fetchChannelByRouteId(routeId);
+    await channel?.send([
+      "可以，我来查。",
+      "你要我查哪一项？直接回数字就行：",
+      "",
+      "1) `terminal.airflow.eu.org` 现在是否恢复",
+      "2) Cloudflare Tunnel 是否在线",
+      "3) 本地 `ttyd`（65534 端口）是否在监听",
+      "4) 三项都查（我推荐）"
+    ].join("\n"));
+
+    await runtime.handleEventPayload({
+      header: {
+        event_id: "evt-quick-reply-1",
+        event_type: "im.message.receive_v1"
+      },
+      event: {
+        sender: {
+          sender_id: { open_id: "ou_user_quick_reply_1" },
+          sender_type: "user"
+        },
+        message: {
+          message_id: "om_quick_reply_1",
+          chat_id: "oc_repo_quick_reply_1",
+          chat_type: "p2p",
+          message_type: "text",
+          content: JSON.stringify({ text: "4" }),
+          mentions: []
+        }
+      }
+    });
+
+    expect(jobs).toEqual([
+      {
+        repoChannelId: routeId,
+        promptText: "选择第4项：三项都查（我推荐）"
       }
     ]);
   });
@@ -764,7 +858,7 @@ describe("feishu runtime", () => {
 
     expect(replies).toHaveLength(1);
     expect(replies[0]).toContain("Bridge is ready in this Feishu chat.");
-    expect(replies[0]).toContain("default read-only Feishu workspace");
+    expect(replies[0]).toContain("default Feishu workspace");
     expect(replies[0]).toContain("cwd: `/tmp/open-welcome`");
     expect(replies[0]).toContain("Use `/ask <prompt>` or `@bot <prompt>` in group chats.");
   });
@@ -1325,7 +1419,7 @@ describe("feishu runtime", () => {
   test("parses route-id argument for /joinbot", async () => {
     const invitedUrls: string[] = [];
 
-    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/tenant_access_token/internal")) {
         return new Response(JSON.stringify({ code: 0, tenant_access_token: "tenant-token", expire: 7200 }), {

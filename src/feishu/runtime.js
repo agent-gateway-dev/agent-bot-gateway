@@ -40,6 +40,7 @@ export function createFeishuRuntime(deps) {
   } = runtimeEnv;
   const seenEventIds = new Map();
   const sentMessages = new Map();
+  const recentOutgoingTextByChat = new Map();
   const transport = normalizeFeishuTransport(feishuTransport);
   const proxyUrl = getProxyUrl();
   const proxyAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : null;
@@ -159,8 +160,9 @@ export function createFeishuRuntime(deps) {
     if (!shouldHandleIncomingMessage(message, text)) {
       return;
     }
+    const resolvedText = resolveQuickReplySelectionText(message.chat_id, text);
 
-    const normalizedCommand = normalizeCommandText(text);
+    const normalizedCommand = normalizeCommandText(resolvedText);
     if (normalizedCommand === "!help") {
       await safeReply(inboundMessage, getHelpText({ platformId: "feishu" }));
       return;
@@ -295,7 +297,7 @@ export function createFeishuRuntime(deps) {
       return;
     }
 
-    const inputItems = await runtimeAdapters.buildTurnInputFromMessage(inboundMessage, text, [], context.setup);
+    const inputItems = await runtimeAdapters.buildTurnInputFromMessage(inboundMessage, resolvedText, [], context.setup);
     if (inputItems.length === 0) {
       return;
     }
@@ -569,6 +571,7 @@ export function createFeishuRuntime(deps) {
       }
     };
     sentMessages.set(messageId, sent);
+    rememberOutgoingText(chatId, normalizedText);
     return sent;
   }
 
@@ -902,6 +905,40 @@ export function createFeishuRuntime(deps) {
     return false;
   }
 
+  function rememberOutgoingText(chatId, text) {
+    const normalizedChatId = String(chatId ?? "").trim();
+    const normalizedText = String(text ?? "").trim();
+    if (!normalizedChatId || !normalizedText) {
+      return;
+    }
+    const now = Date.now();
+    for (const [key, entry] of recentOutgoingTextByChat.entries()) {
+      if (!entry || now - entry.at > 30 * 60_000) {
+        recentOutgoingTextByChat.delete(key);
+      }
+    }
+    recentOutgoingTextByChat.set(normalizedChatId, {
+      text: normalizedText,
+      at: now
+    });
+  }
+
+  function resolveQuickReplySelectionText(chatId, text) {
+    const normalizedText = String(text ?? "").trim();
+    if (!/^\d{1,2}$/.test(normalizedText)) {
+      return normalizedText;
+    }
+    const recent = recentOutgoingTextByChat.get(String(chatId ?? "").trim());
+    if (!recent || Date.now() - recent.at > 30 * 60_000) {
+      return normalizedText;
+    }
+    const selectedOptionText = resolveNumberedOptionText(recent.text, normalizedText);
+    if (!selectedOptionText) {
+      return normalizedText;
+    }
+    return `选择第${normalizedText}项：${selectedOptionText}`;
+  }
+
   return {
     enabled: feishuEnabled,
     transport,
@@ -1095,6 +1132,39 @@ function normalizeIncomingText(text) {
     .replace(/\u200B/g, "")
     .replace(/^(?:@\S+\s*)+/, "")
     .trim();
+}
+
+function resolveNumberedOptionText(text, selection) {
+  const selectedNumber = String(selection ?? "").trim();
+  if (!selectedNumber) {
+    return "";
+  }
+  const options = parseNumberedOptions(text);
+  if (options.length < 2) {
+    return "";
+  }
+  const matched = options.find((option) => option.number === selectedNumber);
+  return matched?.text ?? "";
+}
+
+function parseNumberedOptions(text) {
+  const lines = String(text ?? "").split(/\r?\n/);
+  const options = [];
+  for (const line of lines) {
+    const match = line.match(/^\s*(\d{1,2})\s*([).、]|）)\s+(.+?)\s*$/);
+    if (!match) {
+      continue;
+    }
+    const optionText = String(match[3] ?? "").trim();
+    if (!optionText) {
+      continue;
+    }
+    options.push({
+      number: match[1],
+      text: optionText
+    });
+  }
+  return options;
 }
 
 function normalizeCommandText(text) {
@@ -1358,7 +1428,7 @@ function buildFeishuBotAddedText({ chatId, operatorOpenId, context, bindingKind,
   if (bindingKind === "general") {
     lines.push("This chat is using the read-only Feishu general workspace.");
   } else if (bindingKind === "unbound-open") {
-    lines.push("This new chat is usable immediately with the default read-only Feishu workspace.");
+    lines.push("This new chat is usable immediately with the default Feishu workspace.");
   } else {
     lines.push("This chat is already bound to a repo workspace.");
   }

@@ -4,17 +4,18 @@ import { runConfigValidateCommand } from "./commands/config-validate.js";
 import { runDoctorCommand } from "./commands/doctor.js";
 import { runLogsCommand } from "./commands/logs.js";
 import { runReloadCommand } from "./commands/reload.js";
-import { runStartCommand, runStopCommand } from "./commands/service.js";
+import { runRestartCommand, runStartCommand, runStopCommand } from "./commands/service.js";
 import { runStatusCommand } from "./commands/status.js";
 import type { CliCommand, CliContext } from "../types/events.js";
 
 const commands: Record<string, CliCommand["run"]> = {
   status: runStatusCommand,
+  "service-status": runStatusCommand,
   logs: runLogsCommand,
   start: runStartCommand,
   stop: runStopCommand,
   reload: runReloadCommand,
-  restart: runReloadCommand,
+  restart: runRestartCommand,
   capabilities: runCapabilitiesCommand,
   "config-validate": runConfigValidateCommand,
   doctor: runDoctorCommand
@@ -27,12 +28,13 @@ function printUsage(): void {
       "       bun run cli <command>",
       "",
       "Commands:",
-      "  status            Show runtime paths, binding count, and heartbeat summary",
+      "  status            Show launchd service state, runtime paths, and heartbeat summary",
+      "  service-status    Alias for status",
       "  logs              Tail active bridge logs (stdout/stderr)",
       "  start             Start launchd service (bootstrap+enable+kickstart)",
       "  stop              Stop launchd service (bootout)",
       "  reload [reason]   Write host-managed restart request signal file",
-      "  restart [reason]  Alias for reload",
+      "  restart           Restart launchd service (enable+bootstrap+kickstart -k)",
       "  capabilities      Show platform + agent capability matrix (use --compact for concise rows)",
       "  config-validate   Validate channel/env config",
       "  doctor            Run operational diagnostics"

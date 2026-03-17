@@ -90,19 +90,4 @@ describe("cli paths", () => {
     expect(runtimePaths.stderrLogPath).toBe(path.resolve("/tmp/installed.err.log"));
   });
 
-  test("falls back to legacy launchd plist names when present", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "codex-bridge-cli-paths-"));
-    tempDirs.push(cwd);
-    const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "codex-bridge-cli-home-"));
-    tempDirs.push(fakeHome);
-    process.env.HOME = fakeHome;
-    await fs.writeFile(
-      path.join(cwd, "com.codex.discord.bridge.plist"),
-      "<plist><dict><key>StandardOutPath</key><string>/tmp/legacy.out.log</string></dict></plist>",
-      "utf8"
-    );
-
-    const runtimePaths = resolveCliRuntimePaths(cwd);
-    expect(runtimePaths.stdoutLogPath).toBe(path.resolve("/tmp/legacy.out.log"));
-  });
 });

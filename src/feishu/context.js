@@ -67,9 +67,9 @@ export function resolveFeishuContext(message, options) {
         ? { resolvedAgentId: resolvedUnbound.resolvedAgentId }
         : {}),
       bindingKind: "unbound-open",
-      mode: "general",
-      sandboxMode: "read-only",
-      allowFileWrites: false
+      mode: "repo",
+      sandboxMode: config.sandboxMode,
+      allowFileWrites: true
     }
   };
 }
