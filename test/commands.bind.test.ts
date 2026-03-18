@@ -300,6 +300,90 @@ describe("bind commands", () => {
     });
   });
 
+  test("setmodel normalizes model ids before persisting", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-setmodel-normalize-"));
+    tempDirs.push(dir);
+    const { router, replies, getChannelSetups, configPath } = await createRouterHarness(
+      {
+        "channel-1": { cwd: dir }
+      },
+      {
+        autoDiscoverProjects: false,
+        channels: {
+          "channel-1": { cwd: dir }
+        }
+      }
+    );
+    const message = createMessage();
+    const context = {
+      repoChannelId: "channel-1",
+      setup: {
+        cwd: dir,
+        mode: "repo"
+      }
+    };
+
+    await router.handleCommand(message, "!setmodel GPT_5.4_Codex", context);
+
+    expect(getChannelSetups()).toEqual({
+      "channel-1": {
+        cwd: dir,
+        model: "gpt-5.4-codex"
+      }
+    });
+    expect(replies.at(-1)).toContain("Set this channel model override to `gpt-5.4-codex`.");
+    expect(JSON.parse(await fs.readFile(configPath, "utf8"))).toEqual({
+      autoDiscoverProjects: false,
+      channels: {
+        "channel-1": {
+          cwd: dir,
+          model: "gpt-5.4-codex"
+        }
+      }
+    });
+  });
+
+  test("setmodel rejects non-codex model ids before persisting", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-setmodel-reject-"));
+    tempDirs.push(dir);
+    const { router, replies, getChannelSetups, configPath } = await createRouterHarness(
+      {
+        "channel-1": { cwd: dir }
+      },
+      {
+        autoDiscoverProjects: false,
+        channels: {
+          "channel-1": { cwd: dir }
+        }
+      }
+    );
+    const message = createMessage();
+    const context = {
+      repoChannelId: "channel-1",
+      setup: {
+        cwd: dir,
+        mode: "repo"
+      }
+    };
+
+    await router.handleCommand(message, "!setmodel GPT-5.4-Mini", context);
+
+    expect(getChannelSetups()).toEqual({
+      "channel-1": {
+        cwd: dir
+      }
+    });
+    expect(replies.at(-1)).toContain("Unsupported model override `gpt-5.4-mini`.");
+    expect(JSON.parse(await fs.readFile(configPath, "utf8"))).toEqual({
+      autoDiscoverProjects: false,
+      channels: {
+        "channel-1": {
+          cwd: dir
+        }
+      }
+    });
+  });
+
   test("clearmodel removes an explicit model override and falls back to default", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-clearmodel-"));
     tempDirs.push(dir);

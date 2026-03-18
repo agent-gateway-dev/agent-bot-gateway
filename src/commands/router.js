@@ -156,11 +156,12 @@ export function createCommandRouter(deps) {
         await safeReply(message, "`!setmodel` is only available in repo channels.");
         return;
       }
-      const nextModel = String(rest ?? "").trim();
-      if (!nextModel) {
-        await safeReply(message, "Usage: `!setmodel <model>`");
+      const parsedModel = parseRequestedModelOverride(rest, config);
+      if (!parsedModel.ok) {
+        await safeReply(message, parsedModel.message);
         return;
       }
+      const nextModel = parsedModel.value;
 
       const existingSetup = getChannelSetups()[message.channelId];
       if (!existingSetup?.cwd) {
@@ -954,6 +955,68 @@ function uniqueGuildTextChannelName(guild, baseName, textChannelType) {
   }
 
   return candidate;
+}
+
+function parseRequestedModelOverride(rawValue, config) {
+  const normalized = normalizeModelId(rawValue);
+  if (!normalized) {
+    return {
+      ok: false,
+      message: "Usage: `!setmodel <model>`"
+    };
+  }
+
+  const configuredModels = collectConfiguredModelIds(config);
+  if (configuredModels.has(normalized) || looksLikeCodexModelId(normalized)) {
+    return {
+      ok: true,
+      value: normalized
+    };
+  }
+
+  const suggestions = [...configuredModels].slice(0, 4);
+  const suggestionText =
+    suggestions.length > 0
+      ? `Configured/known models here: ${suggestions.map((model) => `\`${model}\``).join(", ")}.`
+      : "Use a Codex model id such as `gpt-5.3-codex` or `gpt-5.4-codex`.";
+
+  return {
+    ok: false,
+    message: `Unsupported model override \`${normalized}\`. This bridge accepts configured models or Codex model ids. ${suggestionText}`
+  };
+}
+
+function normalizeModelId(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-");
+}
+
+function looksLikeCodexModelId(value) {
+  return value.includes("codex");
+}
+
+function collectConfiguredModelIds(config) {
+  const models = new Set();
+  const defaultModel = normalizeModelId(config?.defaultModel);
+  if (defaultModel) {
+    models.add(defaultModel);
+  }
+
+  const agents = config?.agents;
+  if (!agents || typeof agents !== "object") {
+    return models;
+  }
+
+  for (const agent of Object.values(agents)) {
+    const model = normalizeModelId(agent?.model);
+    if (model) {
+      models.add(model);
+    }
+  }
+
+  return models;
 }
 
 async function pathExists(fsModule, targetPath) {
