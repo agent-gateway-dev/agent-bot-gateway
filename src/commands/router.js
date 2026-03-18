@@ -71,6 +71,11 @@ export function createCommandRouter(deps) {
       return;
     }
 
+    if (command === "!models") {
+      await safeReply(message, buildModelListText({ config, context, getChannelSetups, messageChannelId: message.channelId }));
+      return;
+    }
+
     if (command === "!setpath") {
       await handleSetPathCommand(message, rest, context);
       return;
@@ -416,6 +421,7 @@ export function createCommandRouter(deps) {
     }
     lines.push(`\`${prefix}setpath <abs-path>\` bind this chat to an existing repo path`);
     lines.push(`\`${prefix}agents\` show configured agents and current selection`);
+    lines.push(`\`${prefix}models\` show current and configured model ids`);
     lines.push(`\`${prefix}ask <prompt>\` send prompt in this repo channel`);
     lines.push(`\`${prefix}status\` show queue/thread status for this channel`);
     lines.push(`\`${prefix}new\` reset Codex thread binding for this channel`);
@@ -1026,6 +1032,85 @@ async function pathExists(fsModule, targetPath) {
   } catch {
     return false;
   }
+}
+
+function buildModelListText({ config, context, getChannelSetups, messageChannelId }) {
+  const channelSetup = context?.setup ?? getChannelSetups?.()?.[messageChannelId] ?? null;
+  const currentModel =
+    context?.setup?.resolvedModel ??
+    context?.setup?.model ??
+    channelSetup?.resolvedModel ??
+    channelSetup?.model ??
+    config?.defaultModel ??
+    null;
+  const currentAgent = context?.setup?.resolvedAgentId ?? context?.setup?.agentId ?? channelSetup?.agentId ?? null;
+  const modelRows = collectConfiguredModelRows(config);
+
+  const lines = ["model list:"];
+  lines.push(`current channel model: \`${currentModel ?? "(unknown)"}\`${describeModelSource(channelSetup, currentAgent)}`);
+  lines.push(`default model: \`${config?.defaultModel ?? "(unset)"}\``);
+  lines.push("configured model ids:");
+  if (modelRows.length === 0) {
+    lines.push("- (none configured)");
+  } else {
+    for (const row of modelRows) {
+      const agentSuffix =
+        row.agentIds.length > 0 ? ` <- agents: ${row.agentIds.map((agentId) => `\`${agentId}\``).join(", ")}` : "";
+      lines.push(`- \`${row.model}\`${row.isDefault ? " (default)" : ""}${agentSuffix}`);
+    }
+  }
+  lines.push("Tip: use `!setmodel <model>` or `/setmodel` to pin one, and `!clearmodel` or `/clearmodel` to go back.");
+  return lines.join("\n");
+}
+
+function describeModelSource(channelSetup, currentAgent) {
+  if (typeof channelSetup?.model === "string" && channelSetup.model.trim().length > 0) {
+    return " (channel override)";
+  }
+  if (typeof currentAgent === "string" && currentAgent.trim().length > 0) {
+    return ` (agent \`${currentAgent.trim()}\`)`;
+  }
+  return " (default)";
+}
+
+function collectConfiguredModelRows(config) {
+  const rowsByModel = new Map();
+
+  const addModel = (model, meta = {}) => {
+    const normalized = String(model ?? "").trim();
+    if (!normalized) {
+      return;
+    }
+    const key = normalized.toLowerCase();
+    const existing = rowsByModel.get(key) ?? {
+      model: normalized,
+      isDefault: false,
+      agentIds: []
+    };
+    if (meta.isDefault) {
+      existing.isDefault = true;
+    }
+    if (typeof meta.agentId === "string" && meta.agentId.trim().length > 0 && !existing.agentIds.includes(meta.agentId)) {
+      existing.agentIds.push(meta.agentId);
+    }
+    rowsByModel.set(key, existing);
+  };
+
+  addModel(config?.defaultModel, { isDefault: true });
+  const agents = config?.agents && typeof config.agents === "object" ? config.agents : {};
+  for (const [agentId, agent] of Object.entries(agents)) {
+    addModel(agent?.model, { agentId });
+  }
+
+  return [...rowsByModel.values()].sort((left, right) => {
+    if (left.isDefault && !right.isDefault) {
+      return -1;
+    }
+    if (!left.isDefault && right.isDefault) {
+      return 1;
+    }
+    return left.model.localeCompare(right.model);
+  });
 }
 
 async function persistChannelSetupToConfig(fsModule, pathModule, targetConfigPath, channelId, setup) {

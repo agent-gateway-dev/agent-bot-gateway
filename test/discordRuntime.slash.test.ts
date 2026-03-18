@@ -170,7 +170,7 @@ function createRuntime(overrides: Record<string, unknown> = {}) {
       calls.push({ type: "unbind", payload: null });
       await message.reply("unbind");
     },
-    registerSlashCommands: async () => ({ scope: "guild", guildId: "guild-1", count: 25 }),
+    registerSlashCommands: async () => ({ scope: "guild", guildId: "guild-1", count: 26 }),
     parseApprovalButtonCustomId: () => null,
     approvalButtonPrefix: "approval",
     pendingApprovals: new Map(),
@@ -245,6 +245,26 @@ describe("discord runtime slash commands", () => {
 
     expect(calls).toEqual([{ type: "make-channel", payload: { rest: "repo-two", options: { initRepo: true } } }]);
     expect(replies).toEqual(["make-channel repo-two"]);
+  });
+
+  test("handles /models without requiring existing repo context", async () => {
+    const { runtime, calls } = createRuntime({
+      resolveRepoContext: () => null
+    });
+    const { interaction, replies } = createInteraction("models");
+
+    await runtime.handleInteraction(interaction);
+
+    expect(calls).toEqual([
+      {
+        type: "command",
+        payload: {
+          content: "!models",
+          context: null
+        }
+      }
+    ]);
+    expect(replies).toEqual(["handled !models"]);
   });
 
   test("auto-initializes a new text channel created under the managed projects category", async () => {

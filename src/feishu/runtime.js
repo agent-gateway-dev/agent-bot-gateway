@@ -1728,6 +1728,7 @@ const FEISHU_TEXT_COMMANDS = new Set([
   "restart",
   "interrupt",
   "where",
+  "models",
   "approve",
   "decline",
   "cancel",

@@ -678,6 +678,48 @@ describe("bind commands", () => {
     expect(output).toContain("image❌");
   });
 
+  test("models lists the current model and configured model ids", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dc-bridge-models-list-"));
+    tempDirs.push(dir);
+    const { router, replies } = await createRouterHarness(
+      {
+        "channel-1": { cwd: dir, model: "gpt-5.4-codex" }
+      },
+      {
+        channels: {
+          "channel-1": { cwd: dir, model: "gpt-5.4-codex" }
+        }
+      },
+      {
+        configOverrides: {
+          defaultModel: "gpt-5.3-codex",
+          agents: {
+            codex: { model: "gpt-5.3-codex" },
+            claude: { model: "claude-3.7-sonnet" }
+          }
+        }
+      }
+    );
+    const message = createMessage();
+    const context = {
+      repoChannelId: "channel-1",
+      setup: {
+        cwd: dir,
+        mode: "repo",
+        model: "gpt-5.4-codex"
+      }
+    };
+
+    await router.handleCommand(message, "!models", context);
+
+    const output = replies.at(-1) ?? "";
+    expect(output).toContain("current channel model: `gpt-5.4-codex` (channel override)");
+    expect(output).toContain("default model: `gpt-5.3-codex`");
+    expect(output).toContain("`gpt-5.3-codex` (default)");
+    expect(output).toContain("`claude-3.7-sonnet`");
+    expect(output).toContain("Tip: use `!setmodel <model>` or `/setmodel`");
+  });
+
   test("mkchannel creates a new text channel under the same parent and avoids name collisions", async () => {
     const { router, replies } = await createRouterHarness();
     const { guild, createdChannels } = createGuild([

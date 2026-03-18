@@ -28,6 +28,7 @@ describe("slash commands", () => {
       "interrupt",
       "where",
       "agents",
+      "models",
       "setpath",
       "bind",
       "rebind",
@@ -87,6 +88,7 @@ describe("slash commands", () => {
     ).toBe("!setagent claude");
     expect(buildCommandTextFromInteraction({ commandName: "clearagent", options: createOptions() })).toBe("!clearagent");
     expect(buildCommandTextFromInteraction({ commandName: "agents", options: createOptions() })).toBe("!agents");
+    expect(buildCommandTextFromInteraction({ commandName: "models", options: createOptions() })).toBe("!models");
     expect(buildCommandTextFromInteraction({ commandName: "initrepo", options: createOptions({ force: true }) })).toBe(
       "!initrepo force"
     );
@@ -121,8 +123,8 @@ describe("slash commands", () => {
     expect(summary).toEqual({
       scope: "guild",
       guildId: "guild-1",
-      count: 25
+      count: 26
     });
-    expect(calls).toEqual([{ target: "guild", count: 25 }]);
+    expect(calls).toEqual([{ target: "guild", count: 26 }]);
   });
 });

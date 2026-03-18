@@ -252,6 +252,20 @@ export function createDiscordRuntime(deps) {
       return;
     }
 
+    if (interaction.commandName === "models") {
+      const context = resolveRepoContext(message, {
+        channelSetups: getChannelSetups(),
+        config,
+        generalChannel: {
+          id: generalChannelId,
+          name: generalChannelName,
+          cwd: generalChannelCwd
+        }
+      });
+      await handleCommand(message, commandText, context);
+      return;
+    }
+
     const context = resolveRepoContext(message, {
       channelSetups: getChannelSetups(),
       config,
@@ -392,6 +406,7 @@ const DISCORD_MESSAGE_COMMANDS = new Set([
   "clearmodel",
   "setagent",
   "clearagent",
+  "models",
   "agents"
 ]);
 
