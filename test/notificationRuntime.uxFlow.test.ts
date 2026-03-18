@@ -476,11 +476,12 @@ describe("notification runtime ux flow cutover", () => {
     }
   });
 
-  test("streams agent deltas into the status message before completion", async () => {
+  test("streams Discord agent deltas as segmented messages instead of editing the status message", async () => {
     const activeTurns = new Map<string, TurnTracker>();
     const tracker = createTracker();
     tracker.lastFlushAt = Date.now() - 5000;
     activeTurns.set("thread-1", tracker);
+    const streamedMessages: string[] = [];
     const statusEdits: string[] = [];
     tracker.statusMessage.edit = async (text: string) => {
       statusEdits.push(text);
@@ -516,7 +517,10 @@ describe("notification runtime ux flow cutover", () => {
       normalizeFinalSummaryText: (text: string) => text.trim(),
       truncateStatusText: (text: string) => text,
       isTransientReconnectErrorMessage: () => false,
-      safeSendToChannel: async () => null,
+      safeSendToChannel: async (_channel: unknown, text: string) => {
+        streamedMessages.push(text);
+        return { id: `discord-stream-${streamedMessages.length}` };
+      },
       truncateForDiscordMessage: (text: string) => text,
       discordMaxMessageLength: 1900,
       debugLog: () => {},
@@ -526,18 +530,20 @@ describe("notification runtime ux flow cutover", () => {
 
     await runtime.handleNotification({
       method: "item/agentMessage/delta",
-      params: { threadId: "thread-1", delta: "Hello" }
+      params: { threadId: "thread-1", delta: "Hello." }
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(statusEdits).toContain("Hello");
+    expect(streamedMessages).toEqual(["Hello."]);
+    expect(statusEdits.some((value) => value.includes("Hello."))).toBe(false);
   });
 
-  test("does not resend the first summary chunk when it was already streamed in status message", async () => {
+  test("does not resend the first Discord summary chunk when it was already streamed as a message", async () => {
     const activeTurns = new Map<string, TurnTracker>();
     const tracker = createTracker();
     tracker.lastFlushAt = Date.now() - 5000;
     activeTurns.set("thread-1", tracker);
+    const streamedMessages: string[] = [];
     const chunkedMessages: string[] = [];
     const statusEdits: string[] = [];
     tracker.statusMessage.edit = async (text: string) => {
@@ -579,7 +585,10 @@ describe("notification runtime ux flow cutover", () => {
       normalizeFinalSummaryText: (text: string) => text.trim(),
       truncateStatusText: (text: string) => text,
       isTransientReconnectErrorMessage: () => false,
-      safeSendToChannel: async () => null,
+      safeSendToChannel: async (_channel: unknown, text: string) => {
+        streamedMessages.push(text);
+        return { id: `discord-stream-${streamedMessages.length}` };
+      },
       truncateForDiscordMessage: (text: string) => text,
       discordMaxMessageLength: 1900,
       debugLog: () => {},
@@ -591,7 +600,7 @@ describe("notification runtime ux flow cutover", () => {
 
     await runtime.handleNotification({
       method: "item/agentMessage/delta",
-      params: { threadId: "thread-1", delta: "Streamed final answer" }
+      params: { threadId: "thread-1", delta: "Streamed final answer." }
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
     await runtime.handleNotification({
@@ -600,8 +609,85 @@ describe("notification runtime ux flow cutover", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 40));
 
-    expect(statusEdits.some((value) => value.includes("Streamed final answer"))).toBe(true);
+    expect(streamedMessages).toEqual(["Streamed final answer."]);
     expect(chunkedMessages).toEqual([]);
+    expect(statusEdits.some((value) => value.includes("Streamed final answer."))).toBe(false);
+  });
+
+  test("sends only the remaining Discord summary tail on finalize after streamed segments", async () => {
+    const activeTurns = new Map<string, TurnTracker>();
+    const tracker = createTracker();
+    tracker.lastFlushAt = Date.now() - 5000;
+    activeTurns.set("thread-1", tracker);
+    const streamedMessages: string[] = [];
+    const chunkedMessages: string[] = [];
+
+    const runtime = createNotificationRuntime({
+      activeTurns,
+      renderVerbosity: "user",
+      TURN_PHASE: {
+        RUNNING: "running",
+        RECONNECTING: "reconnecting",
+        FINALIZING: "finalizing",
+        FAILED: "failed",
+        DONE: "done"
+      },
+      transitionTurnPhase: () => true,
+      normalizeCodexNotification: (notification: CodexNotification) => {
+        const { method, params } = notification;
+        if (method === "item/agentMessage/delta") {
+          return { kind: "agent_delta", threadId: params.threadId, delta: params.delta };
+        }
+        if (method === "turn/completed") {
+          return { kind: "turn_completed", threadId: params.threadId };
+        }
+        return { kind: "unknown" };
+      },
+      extractAgentMessageText: () => "",
+      maybeSendAttachmentsForItem: async () => {},
+      maybeSendInferredAttachmentsFromText: async () => 0,
+      recordFileChanges: () => {},
+      summarizeItemForStatus: () => [],
+      extractWebSearchDetails: () => [],
+      buildFileDiffSection: () => "",
+      buildTurnRenderPlan: () => ({ primaryMessage: "", statusMessages: [], attachments: [] }),
+      sendChunkedToChannel: async (_channel: unknown, text: string) => {
+        chunkedMessages.push(text);
+      },
+      normalizeFinalSummaryText: (text: string) => text.trim(),
+      truncateStatusText: (text: string) => text,
+      isTransientReconnectErrorMessage: () => false,
+      safeSendToChannel: async (_channel: unknown, text: string) => {
+        streamedMessages.push(text);
+        return { id: `discord-stream-${streamedMessages.length}` };
+      },
+      truncateForDiscordMessage: (text: string) => text,
+      discordMaxMessageLength: 1900,
+      debugLog: () => {},
+      writeHeartbeatFile: async () => {},
+      onTurnFinalized: async () => {},
+      turnCompletionQuietMs: 5,
+      turnCompletionMaxWaitMs: 100
+    });
+
+    await runtime.handleNotification({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", delta: "Discord prefix." }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runtime.handleNotification({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", delta: " tail" }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runtime.handleNotification({
+      method: "turn/completed",
+      params: { threadId: "thread-1" }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(streamedMessages).toEqual(["Discord prefix."]);
+    expect(chunkedMessages).toEqual([" tail"]);
   });
 
   test("streams Feishu deltas as segmented messages instead of editing the status message", async () => {
@@ -1070,8 +1156,8 @@ describe("notification runtime ux flow cutover", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 80));
 
-    expect(statusEdits.some((value) => value.includes("I’ll check the existing"))).toBe(true);
-    expect(chunkedMessages).toEqual([]);
+    expect(statusEdits.some((value) => value.includes("I’ll check the existing"))).toBe(false);
+    expect(chunkedMessages).toEqual(["I’ll check the existing"]);
     expect(activeTurns.has("thread-1")).toBe(false);
   });
 

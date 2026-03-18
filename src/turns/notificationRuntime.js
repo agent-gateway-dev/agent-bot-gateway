@@ -31,6 +31,7 @@ export function createNotificationRuntime(deps) {
     turnCompletionMaxWaitMs = 12000,
     reconnectSettleQuietMs = 5000
   } = deps;
+  const discordStreamMinChars = Math.max(80, Math.min(240, Math.floor(discordMaxMessageLength / 16)));
 
   async function handleNotification({ method, params }) {
     const normalized = normalizeCodexNotification({ method, params });
@@ -197,7 +198,7 @@ export function createNotificationRuntime(deps) {
       return;
     }
     if (canSegmentStreamTrackerOutput(tracker)) {
-      await flushFeishuStreamSegments(tracker, { force });
+      await flushSegmentedStreamMessages(tracker, { force });
       tracker.lastFlushAt = Date.now();
       return;
     }
@@ -661,7 +662,7 @@ export function createNotificationRuntime(deps) {
       return;
     }
     if (canSegmentStreamTrackerOutput(tracker)) {
-      await sendFeishuFinalSummary(tracker, summaryTextForDiscord);
+      await sendSegmentedFinalSummary(tracker, summaryTextForDiscord);
       return;
     }
     if (!canInlineStreamTrackerOutput(tracker)) {
@@ -690,11 +691,17 @@ export function createNotificationRuntime(deps) {
   }
 
   function canInlineStreamTrackerOutput(tracker) {
-    return canStreamTrackerOutput(tracker) && !isFeishuTracker(tracker) && Boolean(tracker?.statusMessageId);
+    return canStreamTrackerOutput(tracker) && !canSegmentStreamTrackerOutput(tracker) && Boolean(tracker?.statusMessageId);
   }
 
   function canSegmentStreamTrackerOutput(tracker) {
-    return canStreamTrackerOutput(tracker) && feishuSegmentedStreaming && isFeishuTracker(tracker);
+    if (!canStreamTrackerOutput(tracker)) {
+      return false;
+    }
+    if (isDiscordTracker(tracker)) {
+      return true;
+    }
+    return feishuSegmentedStreaming && isFeishuTracker(tracker);
   }
 
   function isFeishuTracker(tracker) {
@@ -704,14 +711,23 @@ export function createNotificationRuntime(deps) {
     return platform === "feishu";
   }
 
-  async function flushFeishuStreamSegments(tracker, { force }) {
+  function isDiscordTracker(tracker) {
+    const platform = String(tracker?.channel?.platform ?? tracker?.statusMessage?.platform ?? "")
+      .trim()
+      .toLowerCase();
+    return !platform || platform === "discord";
+  }
+
+  async function flushSegmentedStreamMessages(tracker, { force }) {
     ensureFeishuStreamState(tracker);
     const pendingText = String(tracker.fullText ?? "").slice(tracker.streamedTextOffset);
     if (!pendingText) {
       return;
     }
 
-    const chunks = splitTextForMessages(pendingText, feishuMaxMessageLength).filter((chunk) => typeof chunk === "string" && chunk.length > 0);
+    const chunks = splitTextForMessages(pendingText, messageChunkLimitForTracker(tracker)).filter(
+      (chunk) => typeof chunk === "string" && chunk.length > 0
+    );
     if (chunks.length === 0) {
       return;
     }
@@ -720,13 +736,13 @@ export function createNotificationRuntime(deps) {
     if (force) {
       readyChunks.push(...chunks);
     } else if (chunks.length === 1) {
-      if (shouldSendFeishuStreamTail(chunks[0])) {
+      if (shouldSendStreamTail(chunks[0], streamTailMinCharsForTracker(tracker))) {
         readyChunks.push(chunks[0]);
       }
     } else {
       readyChunks.push(...chunks.slice(0, -1));
       const tail = chunks[chunks.length - 1];
-      if (shouldSendFeishuStreamTail(tail)) {
+      if (shouldSendStreamTail(tail, streamTailMinCharsForTracker(tracker))) {
         readyChunks.push(tail);
       }
     }
@@ -740,7 +756,7 @@ export function createNotificationRuntime(deps) {
       }
       const sentMessage = await safeSendToChannel(tracker.channel, payload);
       if (!sentMessage) {
-        debugLog("render", "feishu stream segment deferred", {
+        debugLog("render", "stream segment deferred", {
           threadId: tracker.threadId,
           turnId: tracker.threadId,
           segmentLength: payload.length,
@@ -750,7 +766,7 @@ export function createNotificationRuntime(deps) {
       }
       tracker.streamedTextOffset += payload.length;
       tracker.streamedSummaryText += payload;
-      debugLog("render", "sent feishu stream segment", {
+      debugLog("render", "sent stream segment", {
         threadId: tracker.threadId,
         turnId: tracker.threadId,
         segmentLength: payload.length,
@@ -759,15 +775,19 @@ export function createNotificationRuntime(deps) {
     }
   }
 
-  function shouldSendFeishuStreamTail(text) {
+  function shouldSendStreamTail(text, minChars) {
     const normalized = String(text ?? "").replace(/\s+$/u, "");
     if (!normalized.trim()) {
       return false;
     }
-    if (normalized.length >= feishuStreamMinChars) {
+    if (normalized.length >= minChars) {
       return true;
     }
     return /(?:\r?\n|[。！？.!?])$/u.test(normalized);
+  }
+
+  function streamTailMinCharsForTracker(tracker) {
+    return isFeishuTracker(tracker) ? feishuStreamMinChars : discordStreamMinChars;
   }
 
   function ensureFeishuStreamState(tracker) {
@@ -782,7 +802,7 @@ export function createNotificationRuntime(deps) {
     }
   }
 
-  async function sendFeishuFinalSummary(tracker, summaryTextForDiscord) {
+  async function sendSegmentedFinalSummary(tracker, summaryTextForDiscord) {
     ensureFeishuStreamState(tracker);
     let remaining = summaryTextForDiscord;
     if (tracker.streamedSummaryText && summaryTextForDiscord.startsWith(tracker.streamedSummaryText)) {
@@ -793,7 +813,7 @@ export function createNotificationRuntime(deps) {
     if (!remaining.trim()) {
       return;
     }
-    await sendChunkedToChannel(tracker.channel, remaining, feishuMaxMessageLength);
+    await sendChunkedToChannel(tracker.channel, remaining, messageChunkLimitForTracker(tracker));
     tracker.streamedSummaryText = summaryTextForDiscord;
   }
 
