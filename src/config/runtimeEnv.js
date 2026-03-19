@@ -50,7 +50,13 @@ export function loadRuntimeEnv() {
     backendHttpPort,
     feishuPort
   } = parseRuntimeNumericConfig(process.env);
-  const attachmentRoots = parsePathListEnv(process.env.DISCORD_ATTACHMENT_ROOTS);
+  const attachmentRoots = [
+    ...new Set(
+      [...parsePathListEnv(process.env.DISCORD_ATTACHMENT_ROOTS), repoRootPath]
+        .filter((value) => typeof value === "string" && value.trim().length > 0)
+        .map((value) => path.resolve(value))
+    )
+  ];
   const attachmentInferFromText = process.env.DISCORD_ATTACHMENT_INFER_FROM_TEXT === "1";
   const attachmentsEnabled = process.env.DISCORD_ENABLE_ATTACHMENTS !== "0";
   const attachmentItemTypes = parseAttachmentItemTypes(process.env.DISCORD_ATTACHMENT_ITEM_TYPES);
@@ -95,6 +101,7 @@ export function loadRuntimeEnv() {
     String(process.env.DISCORD_RESTART_NOTIFY_ROUTE_ID ?? "").trim() || generalChannelId || feishuGeneralRouteId || "";
   const feishuEventDedupePath = path.resolve(process.env.FEISHU_EVENT_DEDUPE_PATH ?? "data/feishu-seen-events.json");
   const feishuRequireMentionInGroup = process.env.FEISHU_REQUIRE_MENTION_IN_GROUP !== "0";
+  const feishuLogIngress = process.env.FEISHU_LOG_INGRESS === "1";
   const feishuSegmentedStreaming = process.env.FEISHU_SEGMENTED_STREAMING === "1";
   const feishuUnboundChatMode = normalizeFeishuUnboundChatMode(process.env.FEISHU_UNBOUND_CHAT_MODE);
   const feishuUnboundChatCwd = path.resolve(process.env.FEISHU_UNBOUND_CHAT_CWD ?? repoRootEnv ?? process.cwd());
@@ -153,6 +160,7 @@ export function loadRuntimeEnv() {
     feishuGeneralRouteId,
     feishuGeneralCwd,
     feishuRequireMentionInGroup,
+    feishuLogIngress,
     feishuSegmentedStreaming,
     feishuStreamMinChars,
     feishuEventDedupeTtlMs,

@@ -35,6 +35,7 @@ export function createFeishuRuntime(deps) {
     feishuGeneralChatId,
     feishuGeneralCwd,
     feishuRequireMentionInGroup,
+    feishuLogIngress,
     feishuEventDedupePath,
     feishuEventDedupeTtlMs,
     feishuUnboundChatMode,
@@ -59,6 +60,23 @@ export function createFeishuRuntime(deps) {
   let wsClient = null;
   let tenantAccessToken = "";
   let tenantAccessTokenExpiresAt = 0;
+
+  function logInboundIngress(decision, fields = {}, { warn = false, force = false } = {}) {
+    if (!feishuLogIngress && !force) {
+      return;
+    }
+    const rendered = Object.entries(fields)
+      .map(([key, value]) => [key, typeof value === "string" ? value.trim() : String(value ?? "").trim()])
+      .filter(([, value]) => value.length > 0)
+      .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+      .join(" ");
+    const line = rendered ? `[feishu][${decision}] ${rendered}` : `[feishu][${decision}]`;
+    if (warn) {
+      console.warn(line);
+      return;
+    }
+    console.log(line);
+  }
 
   async function fetchChannelByRouteId(routeId) {
     const chatId = parseFeishuRouteId(routeId);
@@ -128,24 +146,60 @@ export function createFeishuRuntime(deps) {
 
   async function processMessageReceiveEvent(event, options = {}) {
     const eventId = String(options?.eventId ?? "").trim() || buildLongConnectionEventId(event);
-    if (eventId && (await markEventSeen(eventId))) {
-      return;
-    }
-
-    const senderType = String(event?.sender?.sender_type ?? "");
-    if (senderType && senderType !== "user") {
-      return;
-    }
-
     const message = event?.message;
+    const senderType = String(event?.sender?.sender_type ?? "");
+    const senderOpenId = String(event?.sender?.sender_id?.open_id ?? "").trim();
+    const chatId = String(message?.chat_id ?? "").trim();
+    const chatType = String(message?.chat_type ?? "").trim();
+    const messageId = String(message?.message_id ?? "").trim();
+    const routeId = chatId ? makeFeishuRouteId(chatId) : "";
     const messageType = normalizeIncomingMessageType(message?.message_type);
-    if (!messageType) {
+    const rawText =
+      messageType === "text" || messageType === "post"
+        ? normalizeIncomingText(extractTextMessageContent(message?.content, messageType))
+        : "";
+    const ingressFields = {
+      eventId,
+      routeId,
+      chatId,
+      chatType,
+      messageId,
+      senderOpenId,
+      senderType,
+      messageType: messageType || String(message?.message_type ?? ""),
+      textPreview: summarizeInboundText(rawText)
+    };
+
+    if (eventId && (await markEventSeen(eventId))) {
+      logInboundIngress("drop_duplicate", ingressFields);
       return;
     }
 
-    const senderOpenId = String(event?.sender?.sender_id?.open_id ?? "").trim();
+    if (senderType && senderType !== "user") {
+      logInboundIngress("drop_sender_type", {
+        ...ingressFields,
+        reason: "sender is not a user"
+      });
+      return;
+    }
+
+    if (!messageType) {
+      logInboundIngress("drop_message_type", {
+        ...ingressFields,
+        reason: "unsupported message type"
+      });
+      return;
+    }
+
     if (!isAllowedUser(senderOpenId)) {
-      console.warn(`ignoring Feishu message from filtered user ${senderOpenId || "(unknown)"}`);
+      logInboundIngress(
+        "drop_filtered_user",
+        {
+          ...ingressFields,
+          reason: "sender_open_id is not allowed"
+        },
+        { warn: true, force: true }
+      );
       return;
     }
 
@@ -157,7 +211,10 @@ export function createFeishuRuntime(deps) {
       messageId: message.message_id,
       senderOpenId,
       channel,
-      text: messageType === "text" ? normalizeIncomingText(extractTextMessageContent(message.content)) : "[image]"
+      text:
+        messageType === "text" || messageType === "post"
+          ? normalizeIncomingText(extractTextMessageContent(message.content, messageType))
+          : "[image]"
     });
 
     if (messageType === "image") {
@@ -165,22 +222,39 @@ export function createFeishuRuntime(deps) {
       return;
     }
 
-    const text = normalizeIncomingText(extractTextMessageContent(message.content));
+    const text = rawText;
     if (!text) {
+      logInboundIngress("drop_empty_text", {
+        ...ingressFields,
+        reason: "normalized text is empty"
+      });
       return;
     }
-    if (!shouldHandleIncomingMessage(message, text)) {
+    const handlingDecision = resolveIncomingHandlingDecision(message, text, feishuRequireMentionInGroup);
+    if (!handlingDecision.allowed) {
+      logInboundIngress("drop_routing", {
+        ...ingressFields,
+        reason: handlingDecision.reason
+      });
       return;
     }
     const resolvedText = resolveQuickReplySelectionText(message.chat_id, text);
 
     const normalizedCommand = normalizeCommandText(resolvedText);
     if (normalizedCommand === "!help") {
+      logInboundIngress("command_help", {
+        ...ingressFields,
+        command: normalizedCommand
+      });
       await safeReply(inboundMessage, getHelpText({ platformId: "feishu" }));
       return;
     }
 
     if (normalizedCommand === "!where") {
+      logInboundIngress("command_where", {
+        ...ingressFields,
+        command: normalizedCommand
+      });
       const context = resolveFeishuContext(inboundMessage, buildFeishuContextOptions());
       await safeReply(
         inboundMessage,
@@ -246,17 +320,29 @@ export function createFeishuRuntime(deps) {
     }
 
     if (normalizedCommand.startsWith("!setpath")) {
+      logInboundIngress("command_setpath", {
+        ...ingressFields,
+        command: normalizedCommand
+      });
       const rest = normalizedCommand.replace(/^!setpath\b/i, "").trim();
       await handleSetPathCommand(inboundMessage, rest);
       return;
     }
 
     if (normalizedCommand === "!resync") {
+      logInboundIngress("command_resync", {
+        ...ingressFields,
+        command: normalizedCommand
+      });
       await runManagedRouteCommand(inboundMessage, { forceRebuild: false });
       return;
     }
 
     if (normalizedCommand === "!rebuild") {
+      logInboundIngress("command_rebuild", {
+        ...ingressFields,
+        command: normalizedCommand
+      });
       await runManagedRouteCommand(inboundMessage, { forceRebuild: true });
       return;
     }
@@ -278,6 +364,10 @@ export function createFeishuRuntime(deps) {
 
     const context = resolveFeishuContext(inboundMessage, buildFeishuContextOptions());
     if (!context) {
+      logInboundIngress("reply_unbound_chat", {
+        ...ingressFields,
+        reason: "chat is not bound and unbound mode is strict"
+      });
       await safeReply(
         inboundMessage,
         [
@@ -293,6 +383,11 @@ export function createFeishuRuntime(deps) {
     }
 
     if (normalizedCommand.startsWith("!")) {
+      logInboundIngress("command_router", {
+        ...ingressFields,
+        command: normalizedCommand,
+        bindingKind: context.setup?.bindingKind ?? ""
+      });
       await handleCommand(inboundMessage, normalizedCommand, context);
       return;
     }
@@ -309,10 +404,22 @@ export function createFeishuRuntime(deps) {
       return;
     }
 
-    const inputItems = await runtimeAdapters.buildTurnInputFromMessage(inboundMessage, resolvedText, [], context.setup);
+    const preparedPromptText = prepareFeishuPromptText(resolvedText);
+    const inputItems = await runtimeAdapters.buildTurnInputFromMessage(inboundMessage, preparedPromptText, [], context.setup);
     if (inputItems.length === 0) {
+      logInboundIngress("drop_empty_input_items", {
+        ...ingressFields,
+        bindingKind: context.setup?.bindingKind ?? "",
+        reason: "input builder returned no items"
+      });
       return;
     }
+    logInboundIngress("enqueue_prompt", {
+      ...ingressFields,
+      bindingKind: context.setup?.bindingKind ?? "",
+      repoChannelId: context.repoChannelId,
+      promptPreview: summarizeInboundText(preparedPromptText)
+    });
     runtimeAdapters.enqueuePrompt(context.repoChannelId, {
       inputItems,
       message: inboundMessage,
@@ -380,7 +487,16 @@ export function createFeishuRuntime(deps) {
   }
 
   async function handleInboundImageMessage({ inboundMessage, senderOpenId, message }) {
-    if (!shouldHandleIncomingMessage(message, "")) {
+    const handlingDecision = resolveIncomingHandlingDecision(message, "", feishuRequireMentionInGroup);
+    if (!handlingDecision.allowed) {
+      logInboundIngress("drop_image_routing", {
+        routeId: inboundMessage?.channelId ?? "",
+        chatId: inboundMessage?.channel?.chatId ?? "",
+        chatType: String(message?.chat_type ?? ""),
+        messageId: String(message?.message_id ?? ""),
+        senderOpenId,
+        reason: handlingDecision.reason
+      });
       return;
     }
 
@@ -904,21 +1020,6 @@ export function createFeishuRuntime(deps) {
     return config.allowedFeishuUserIds.includes(openId);
   }
 
-  function shouldHandleIncomingMessage(message, text) {
-    const normalized = String(text ?? "").trim();
-    if (normalized && /^[!/]/.test(normalized)) {
-      return true;
-    }
-    const chatType = String(message?.chat_type ?? "");
-    if (chatType === "p2p") {
-      return true;
-    }
-    if (!feishuRequireMentionInGroup) {
-      return true;
-    }
-    return Array.isArray(message?.mentions) && message.mentions.length > 0;
-  }
-
   function isValidVerificationToken(payload) {
     if (!feishuVerificationToken) {
       return true;
@@ -1142,16 +1243,18 @@ async function readRequestBody(request) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function extractTextMessageContent(rawContent) {
-  if (typeof rawContent !== "string" || !rawContent.trim()) {
+function extractTextMessageContent(rawContent, messageType = "text") {
+  const parsed = parseFeishuMessageContent(rawContent);
+  if (!parsed) {
     return "";
   }
-  try {
-    const parsed = JSON.parse(rawContent);
+  if (messageType === "text") {
     return typeof parsed?.text === "string" ? parsed.text : "";
-  } catch {
-    return "";
   }
+  if (messageType === "post") {
+    return extractPostMessageText(parsed);
+  }
+  return "";
 }
 
 function extractImageMessageResource(rawContent) {
@@ -1224,10 +1327,49 @@ function findFirstString(value, candidateKeys) {
 
 function normalizeIncomingMessageType(messageType) {
   const normalized = String(messageType ?? "").trim().toLowerCase();
-  if (normalized === "text" || normalized === "image") {
+  if (normalized === "text" || normalized === "image" || normalized === "post") {
     return normalized;
   }
   return "";
+}
+
+function extractPostMessageText(value) {
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  const collected = [];
+  const queue = [value];
+  const seen = new Set();
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || typeof current !== "object") {
+      continue;
+    }
+    if (seen.has(current)) {
+      continue;
+    }
+    seen.add(current);
+
+    if (Array.isArray(current)) {
+      for (const entry of current) {
+        queue.push(entry);
+      }
+      continue;
+    }
+
+    for (const [key, entry] of Object.entries(current)) {
+      if ((key === "text" || key === "title") && typeof entry === "string" && entry.trim()) {
+        collected.push(entry.trim());
+        continue;
+      }
+      if (entry && typeof entry === "object") {
+        queue.push(entry);
+      }
+    }
+  }
+
+  return collected.join("\n");
 }
 
 function normalizeIncomingText(text) {
@@ -1235,6 +1377,72 @@ function normalizeIncomingText(text) {
     .replace(/\u200B/g, "")
     .replace(/^(?:@\S+\s*)+/, "")
     .trim();
+}
+
+function summarizeInboundText(text, max = 160) {
+  const normalized = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.length <= max) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(1, max - 1))}…`;
+}
+
+function prepareFeishuPromptText(text) {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed || !looksLikeAttachmentRequest(trimmed)) {
+    return trimmed;
+  }
+  return [
+    "[Platform context: Feishu chat]",
+    "You are replying in a Feishu chat bridged through agent-gateway, not a CLI-only terminal session.",
+    "This bridge can upload supported local files and images as chat attachments.",
+    "If the user asks to send a file as an attachment, do not claim attachments are unsupported.",
+    "If a local path is provided, use that path naturally in your answer so the bridge can upload it.",
+    "",
+    trimmed
+  ].join("\n");
+}
+
+function looksLikeAttachmentRequest(text) {
+  const normalized = String(text ?? "").toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  const hasAttachmentIntent =
+    normalized.includes("附件") ||
+    normalized.includes("附加") ||
+    normalized.includes("attachment") ||
+    normalized.includes("attach") ||
+    normalized.includes("send file") ||
+    normalized.includes("upload file");
+  if (!hasAttachmentIntent) {
+    return false;
+  }
+  return normalized.includes("/") || normalized.includes("文件") || normalized.includes("图片") || normalized.includes("image");
+}
+
+function resolveIncomingHandlingDecision(message, text, requireMentionInGroup) {
+  const normalized = String(text ?? "").trim();
+  if (normalized && /^[!/]/.test(normalized)) {
+    return { allowed: true, reason: "command_like_text" };
+  }
+  const chatType = String(message?.chat_type ?? "");
+  if (chatType === "p2p") {
+    return { allowed: true, reason: "p2p_chat" };
+  }
+  if (!requireMentionInGroup) {
+    return { allowed: true, reason: "group_mentions_not_required" };
+  }
+  if (Array.isArray(message?.mentions) && message.mentions.length > 0) {
+    return { allowed: true, reason: "group_with_mention" };
+  }
+  return {
+    allowed: false,
+    reason: "group_plain_text_without_required_mention"
+  };
 }
 
 function resolveNumberedOptionText(text, selection) {

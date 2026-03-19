@@ -16,6 +16,7 @@ describe("runtime utils", () => {
   test("formatInputTextForSetup prepends general-channel guidance", () => {
     const formatted = formatInputTextForSetup("hello", { mode: "general" });
     expect(formatted).toContain("[Channel context: #general]");
+    expect(formatted).toContain("supported chat platforms may upload that file as an attachment");
     expect(formatted).toContain("hello");
   });
 

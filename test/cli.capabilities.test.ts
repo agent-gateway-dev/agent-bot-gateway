@@ -67,6 +67,7 @@ describe("cli capabilities command", () => {
 
       expect(platforms.find((entry) => entry.platformId === "discord")?.capabilities.supportsAutoDiscovery).toBe(true);
       expect(platforms.find((entry) => entry.platformId === "feishu")?.capabilities.supportsWebhookIngress).toBe(false);
+      expect(platforms.find((entry) => entry.platformId === "feishu")?.capabilities.supportsAttachments).toBe(true);
 
       expect(agents.find((entry) => entry.agentId === "codex-default")?.isDefault).toBe(true);
       expect(agents.find((entry) => entry.agentId === "codex-lite")?.enabled).toBe(false);

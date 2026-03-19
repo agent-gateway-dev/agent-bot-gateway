@@ -9,6 +9,7 @@ export function createNotificationRuntime(deps) {
     normalizeCodexNotification,
     extractAgentMessageText,
     maybeSendAttachmentsForItem = async () => {},
+    maybeSendInferredAttachmentsFromText = async () => 0,
     recordFileChanges,
     buildFileDiffSection,
     sanitizeSummaryForDiscord = (text) => String(text ?? "").trim(),
@@ -268,6 +269,10 @@ export function createNotificationRuntime(deps) {
       });
       if (summaryTextForDiscord) {
         await sendFinalSummary(tracker, summaryTextForDiscord);
+        const inferredAttachmentCount = await maybeSendInferredAttachmentsFromText(tracker, tracker.fullText);
+        if (inferredAttachmentCount > 0) {
+          tracker.hasSummaryImageAttachment = true;
+        }
       }
       if (diffBlock) {
         await sendChunkedToChannel(tracker.channel, diffBlock);

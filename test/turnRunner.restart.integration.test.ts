@@ -229,6 +229,68 @@ describe("turnRunner restart/reconnect integration", () => {
     expect(String(finalizeCalls[0]?.error ?? "")).toContain("Reconnecting");
   });
 
+  test("treats stream disconnected errors as transient reconnect failures", async () => {
+    process.env.DISCORD_TURN_SETTLE_TIMEOUT_MS = "500";
+    process.env.DISCORD_RPC_RECONNECT_MAX_ATTEMPTS = "1";
+    const deps = createDeps();
+    const reconnectPendingCalls: Array<{ threadId: string; attempt: number }> = [];
+    const finalizeCalls: Array<{ threadId: string; error: string | null }> = [];
+
+    const codex = {
+      async request(method: string) {
+        if (method === "thread/start") {
+          return { thread: { id: "thread-1" } };
+        }
+        if (method === "turn/start") {
+          throw new Error(
+            "stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)"
+          );
+        }
+        return {};
+      }
+    };
+
+    const runner = createTurnRunner({
+      queues: deps.queues,
+      activeTurns: deps.activeTurns,
+      state: deps.state,
+      codex,
+      config: {
+        defaultModel: "gpt-5.3-codex",
+        defaultEffort: "medium",
+        approvalPolicy: "never",
+        sandboxMode: "workspace-write"
+      },
+      safeReply: deps.safeReply,
+      buildSandboxPolicyForTurn: async () => null,
+      isThreadNotFoundError: () => false,
+      finalizeTurn: createFinalizeTurn(deps.activeTurns, finalizeCalls),
+      onTurnReconnectPending: (threadId: string, context: { attempt?: number }) => {
+        reconnectPendingCalls.push({ threadId, attempt: Number(context.attempt ?? 0) });
+      },
+      onActiveTurnsChanged: () => {
+        const tracker = deps.activeTurns.get("thread-1");
+        if (tracker && !tracker.fullText) {
+          tracker.fullText = "partial output";
+        }
+      }
+    });
+
+    runner.enqueuePrompt("channel-1", {
+      message: { channelId: "channel-1" },
+      setup: { cwd: "/tmp/repo", model: "gpt-5.3-codex" },
+      inputItems: [{ type: "text", text: "restart test" }]
+    });
+
+    const seenTracker = await waitUntil(() => deps.activeTurns.has("thread-1"));
+    expect(seenTracker).toBe(true);
+    const queueSettled = await waitUntil(() => !runner.getQueue("channel-1").running, 2500, 10);
+    expect(queueSettled).toBe(true);
+    expect(reconnectPendingCalls.length).toBeGreaterThan(0);
+    expect(finalizeCalls.length).toBe(1);
+    expect(String(finalizeCalls[0]?.error ?? "")).toContain("stream disconnected before completion");
+  });
+
   test("aborts stuck turn when max duration is exceeded", async () => {
     process.env.DISCORD_TURN_MAX_DURATION_MS = "1200";
     const deps = createDeps();

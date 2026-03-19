@@ -435,6 +435,168 @@ describe("feishu runtime", () => {
     ]);
   });
 
+  test("adds Feishu attachment guidance for attachment-send requests", async () => {
+    const jobs: Array<{ repoChannelId: string; promptText: string }> = [];
+    const routeId = makeFeishuRouteId("oc_repo_attachment_1");
+    const runtime = createFeishuRuntime({
+      config: {
+        defaultModel: "gpt-5.3-codex",
+        sandboxMode: "workspace-write",
+        allowedFeishuUserIds: []
+      },
+      runtimeEnv: {
+        feishuEnabled: true,
+        feishuAppId: "cli_test",
+        feishuAppSecret: "secret",
+        feishuVerificationToken: "verify-token",
+        feishuPort: 8788,
+        feishuHost: "127.0.0.1",
+        feishuWebhookPath: "/feishu/events",
+        feishuGeneralChatId: "",
+        feishuGeneralCwd: "/tmp/general",
+        feishuRequireMentionInGroup: false
+      },
+      getChannelSetups: () => ({
+        [routeId]: {
+          cwd: "/tmp/repo",
+          model: "gpt-5.3-codex"
+        }
+      }),
+      runManagedRouteCommand: async () => {},
+      getHelpText: () => "help text",
+      isCommandSupportedForPlatform: () => false,
+      handleCommand: async () => {},
+      runtimeAdapters: {
+        buildTurnInputFromMessage: async (_message: unknown, text: string) => [{ type: "text", text }],
+        enqueuePrompt: (repoChannelId: string, job: { inputItems: Array<{ text: string }> }) => {
+          jobs.push({ repoChannelId, promptText: job.inputItems[0]?.text ?? "" });
+        }
+      },
+      safeReply: async () => null
+    });
+
+    await runtime.handleEventPayload({
+      token: "verify-token",
+      header: {
+        event_id: "evt-attach-1",
+        event_type: "im.message.receive_v1"
+      },
+      event: {
+        sender: {
+          sender_id: { open_id: "ou_user_attach_1" },
+          sender_type: "user"
+        },
+        message: {
+          message_id: "om_attach_1",
+          chat_id: "oc_repo_attachment_1",
+          chat_type: "p2p",
+          message_type: "text",
+          content: JSON.stringify({
+            text: "把这个文件以附件的形式发给我 /Volumes/data/workspace/n8n/content/ai-hotspot-digests/2026-03-19/gemini-3-pro-preview/00-今日AI热点速读.md"
+          }),
+          mentions: []
+        }
+      }
+    });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.repoChannelId).toBe(routeId);
+    expect(jobs[0]?.promptText).toContain("[Platform context: Feishu chat]");
+    expect(jobs[0]?.promptText).toContain("do not claim attachments are unsupported");
+    expect(jobs[0]?.promptText).toContain("/Volumes/data/workspace/n8n/content/ai-hotspot-digests/2026-03-19/gemini-3-pro-preview/00-今日AI热点速读.md");
+  });
+
+  test("queues post rich-text prompts for mapped chats", async () => {
+    const jobs: Array<{ repoChannelId: string; promptText: string }> = [];
+    const routeId = makeFeishuRouteId("oc_repo_post_1");
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/tenant_access_token/internal")) {
+        return new Response(JSON.stringify({ code: 0, tenant_access_token: "tenant-token", expire: 7200 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({ code: 0, data: { message_id: "om_reply_post_1" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    };
+
+    const runtime = createFeishuRuntime({
+      config: {
+        defaultModel: "gpt-5.3-codex",
+        sandboxMode: "workspace-write",
+        allowedFeishuUserIds: []
+      },
+      runtimeEnv: {
+        feishuEnabled: true,
+        feishuAppId: "cli_test",
+        feishuAppSecret: "secret",
+        feishuVerificationToken: "",
+        feishuPort: 8788,
+        feishuHost: "127.0.0.1",
+        feishuWebhookPath: "/feishu/events",
+        feishuGeneralChatId: "",
+        feishuGeneralCwd: "/tmp/general",
+        feishuRequireMentionInGroup: false
+      },
+      getChannelSetups: () => ({
+        [routeId]: {
+          cwd: "/tmp/repo-post",
+          model: "gpt-5.3-codex"
+        }
+      }),
+      runManagedRouteCommand: async () => {},
+      getHelpText: () => "help text",
+      isCommandSupportedForPlatform: () => false,
+      handleCommand: async () => {},
+      runtimeAdapters: {
+        buildTurnInputFromMessage: async (_message: unknown, text: string) => [{ type: "text", text }],
+        enqueuePrompt: (repoChannelId: string, job: { inputItems: Array<{ text: string }> }) => {
+          jobs.push({ repoChannelId, promptText: job.inputItems[0]?.text ?? "" });
+        }
+      },
+      safeReply: async () => null
+    });
+
+    await runtime.handleEventPayload({
+      header: {
+        event_id: "evt-post-1",
+        event_type: "im.message.receive_v1"
+      },
+      event: {
+        sender: {
+          sender_id: { open_id: "ou_user_post_1" },
+          sender_type: "user"
+        },
+        message: {
+          message_id: "om_post_1",
+          chat_id: "oc_repo_post_1",
+          chat_type: "group",
+          message_type: "post",
+          content: JSON.stringify({
+            zh_cn: {
+              title: "现在的工作流有几个问题",
+              content: [
+                [{ tag: "text", text: "1. 微信发布的内容有重复" }],
+                [{ tag: "text", text: "2. 小红书发布失败是因为字数超过了1000字的限制" }]
+              ]
+            }
+          }),
+          mentions: []
+        }
+      }
+    });
+
+    expect(jobs).toEqual([
+      {
+        repoChannelId: routeId,
+        promptText: "现在的工作流有几个问题\n1. 微信发布的内容有重复\n2. 小红书发布失败是因为字数超过了1000字的限制"
+      }
+    ]);
+  });
+
   test("expands bare numeric replies using the latest numbered bot message", async () => {
     const jobs: Array<{ repoChannelId: string; promptText: string }> = [];
     const routeId = makeFeishuRouteId("oc_repo_quick_reply_1");

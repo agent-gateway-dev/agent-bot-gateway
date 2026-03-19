@@ -140,7 +140,7 @@ function buildPlatformCapabilityRows() {
         supportsPlainMessages: true,
         supportsSlashCommands: false,
         supportsButtons: false,
-        supportsAttachments: false,
+        supportsAttachments: true,
         supportsRepoBootstrap: false,
         supportsAutoDiscovery: false,
         supportsWebhookIngress

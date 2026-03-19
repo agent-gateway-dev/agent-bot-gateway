@@ -50,6 +50,8 @@ export function isTransientReconnectErrorMessage(message) {
     normalized.includes("connection reset") ||
     normalized.includes("connection closed") ||
     normalized.includes("connection lost") ||
-    normalized.includes("econnreset")
+    normalized.includes("econnreset") ||
+    normalized.includes("stream disconnected before completion") ||
+    normalized.includes("error sending request for url")
   );
 }

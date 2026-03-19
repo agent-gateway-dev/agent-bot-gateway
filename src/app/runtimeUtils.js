@@ -11,6 +11,7 @@ export function formatInputTextForSetup(text, setup) {
     "Treat this channel as informational Q&A and general conversation.",
     "Do not assume repo work, file edits, or tool/command execution unless explicitly requested.",
     "Ignore local cwd/repo context unless the user explicitly asks for it.",
+    "If you generate or reference a local file path for the user, supported chat platforms may upload that file as an attachment.",
     "",
     trimmed
   ].join("\n");

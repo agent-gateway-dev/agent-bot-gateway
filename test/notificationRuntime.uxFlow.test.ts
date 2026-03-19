@@ -132,6 +132,7 @@ describe("notification runtime ux flow cutover", () => {
     const statusEdits: string[] = [];
     const chunkedMessages: string[] = [];
     const itemAttachmentCalls: string[] = [];
+    const inferredAttachmentTexts: string[] = [];
     tracker.statusMessage.edit = async (text: string) => {
       statusEdits.push(text);
     };
@@ -164,7 +165,10 @@ describe("notification runtime ux flow cutover", () => {
       maybeSendAttachmentsForItem: async (_tracker: unknown, item: { type?: string }) => {
         itemAttachmentCalls.push(String(item?.type ?? ""));
       },
-      maybeSendInferredAttachmentsFromText: async () => 2,
+      maybeSendInferredAttachmentsFromText: async (_tracker: unknown, text: string) => {
+        inferredAttachmentTexts.push(text);
+        return 2;
+      },
       recordFileChanges: () => {},
       summarizeItemForStatus: () => [],
       extractWebSearchDetails: () => [],
@@ -220,6 +224,8 @@ describe("notification runtime ux flow cutover", () => {
     expect(chunkedMessages).toContain("Summary complete with image /tmp/final.png");
     expect(chunkedMessages).toContain("```ansi\n+2 -1\n```");
     expect(itemAttachmentCalls).toEqual([]);
+    expect(inferredAttachmentTexts).toEqual(["Summary complete with image /tmp/final.png"]);
+    expect(tracker.hasSummaryImageAttachment).toBe(true);
   });
 
   test("silently skips summary image stage when no image path is inferred", async () => {
@@ -228,6 +234,7 @@ describe("notification runtime ux flow cutover", () => {
     activeTurns.set("thread-1", tracker);
     const sentMessages: string[] = [];
     const chunkedMessages: string[] = [];
+    const inferredAttachmentTexts: string[] = [];
 
     const runtime = createNotificationRuntime({
       activeTurns,
@@ -246,7 +253,10 @@ describe("notification runtime ux flow cutover", () => {
       },
       extractAgentMessageText: () => "",
       maybeSendAttachmentsForItem: async () => {},
-      maybeSendInferredAttachmentsFromText: async () => 0,
+      maybeSendInferredAttachmentsFromText: async (_tracker: unknown, text: string) => {
+        inferredAttachmentTexts.push(text);
+        return 0;
+      },
       recordFileChanges: () => {},
       summarizeItemForStatus: () => [],
       extractWebSearchDetails: () => [],
@@ -280,6 +290,8 @@ describe("notification runtime ux flow cutover", () => {
 
     expect(chunkedMessages).toEqual(["Summary without local image path"]);
     expect(sentMessages).toEqual([]);
+    expect(inferredAttachmentTexts).toEqual(["Summary without local image path"]);
+    expect(tracker.hasSummaryImageAttachment).toBe(false);
   });
 
   test("does not send file diff block in user verbosity", async () => {

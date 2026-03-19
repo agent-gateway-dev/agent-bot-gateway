@@ -23,6 +23,8 @@ describe("feishu platform", () => {
     expect(webhookPlatform.matchesHttpRequest({ pathname: "/feishu/events" })).toBe(true);
 
     expect(longConnectionPlatform.capabilities.supportsWebhookIngress).toBe(false);
+    expect(webhookPlatform.capabilities.supportsAttachments).toBe(true);
+    expect(longConnectionPlatform.capabilities.supportsAttachments).toBe(true);
     expect(longConnectionPlatform.getHttpEndpoints()).toEqual([]);
     expect(longConnectionPlatform.matchesHttpRequest({ pathname: "/feishu/events" })).toBe(false);
   });

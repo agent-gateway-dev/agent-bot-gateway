@@ -16,5 +16,26 @@ describe("runtime env", () => {
       }
     }
   });
-});
 
+  test("includes repo root in attachment roots", () => {
+    const previousRepoRoot = process.env.DISCORD_REPO_ROOT;
+    const previousAttachmentRoots = process.env.DISCORD_ATTACHMENT_ROOTS;
+    process.env.DISCORD_REPO_ROOT = "/Volumes/data/workspace";
+    delete process.env.DISCORD_ATTACHMENT_ROOTS;
+    try {
+      const env = loadRuntimeEnv();
+      expect(env.attachmentRoots).toContain("/Volumes/data/workspace");
+    } finally {
+      if (previousRepoRoot === undefined) {
+        delete process.env.DISCORD_REPO_ROOT;
+      } else {
+        process.env.DISCORD_REPO_ROOT = previousRepoRoot;
+      }
+      if (previousAttachmentRoots === undefined) {
+        delete process.env.DISCORD_ATTACHMENT_ROOTS;
+      } else {
+        process.env.DISCORD_ATTACHMENT_ROOTS = previousAttachmentRoots;
+      }
+    }
+  });
+});

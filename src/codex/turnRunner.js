@@ -436,7 +436,9 @@ function isTransientReconnectError(message) {
     /reconnecting\.\.\.\s*\d+\/\d+/i.test(message) ||
     /temporarily unavailable/i.test(message) ||
     /connection (?:reset|closed|lost)/i.test(message) ||
-    /econnreset/i.test(message)
+    /econnreset/i.test(message) ||
+    /stream disconnected before completion/i.test(message) ||
+    /error sending request for url/i.test(message)
   );
 }
 
