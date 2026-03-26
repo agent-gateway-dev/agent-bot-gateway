@@ -25,6 +25,12 @@ export function createTurnRunner(deps) {
       void processQueue(repoChannelId).catch((error) => {
         queue.running = false;
         console.error(`queue processing failed for ${repoChannelId}: ${formatErrorMessage(error)}`);
+        // Clean up any orphaned turn for this channel
+        const orphanedTurn = findActiveTurnByRepoChannel(repoChannelId);
+        if (orphanedTurn) {
+          console.warn(`cleaning up orphaned turn ${orphanedTurn.threadId} for channel ${repoChannelId}`);
+          abortActiveTurn(orphanedTurn.threadId, error);
+        }
       });
     }
   }

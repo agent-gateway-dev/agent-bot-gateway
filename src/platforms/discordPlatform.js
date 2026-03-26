@@ -19,7 +19,9 @@ export function createDiscordPlatform(deps) {
   function resetClient() {
     try {
       discord.destroy();
-    } catch {}
+    } catch (error) {
+      console.warn(`discord.destroy() failed during reset: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   return {
