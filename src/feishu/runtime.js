@@ -1408,6 +1408,7 @@ function shouldRenderMarkdownAsInteractiveCard(text) {
 
 function buildMarkdownInteractiveCard(text) {
   const headerTitle = buildInteractiveCardTitle(text);
+  const sanitizedContent = sanitizeMarkdownForFeishuCard(text);
   return {
     config: {
       wide_screen_mode: true
@@ -1422,7 +1423,7 @@ function buildMarkdownInteractiveCard(text) {
     elements: [
       {
         tag: "markdown",
-        content: text
+        content: sanitizedContent
       }
     ]
   };
@@ -1445,6 +1446,39 @@ function buildInteractiveCardTitle(text) {
     return "Agent Gateway";
   }
   return normalized.slice(0, 60);
+}
+
+function sanitizeMarkdownForFeishuCard(text) {
+  return String(text ?? "").replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, altText, rawTarget) => {
+    const label = String(altText ?? "").trim() || "Image";
+    const target = normalizeMarkdownLinkTarget(rawTarget);
+    if (!target) {
+      return `Image: ${label}`;
+    }
+    if (isMarkdownLinkSafeTarget(target)) {
+      return `[Image: ${label}](${target})`;
+    }
+    return `Image: ${label} (${target})`;
+  });
+}
+
+function normalizeMarkdownLinkTarget(rawTarget) {
+  const normalized = String(rawTarget ?? "").trim();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.startsWith("<") && normalized.endsWith(">")) {
+    return normalized.slice(1, -1).trim();
+  }
+  const titledMatch = normalized.match(/^(\S+)\s+(?:"[^"]*"|'[^']*')$/);
+  if (titledMatch) {
+    return titledMatch[1];
+  }
+  return normalized;
+}
+
+function isMarkdownLinkSafeTarget(target) {
+  return /^(https?:\/\/|mailto:|\/|\.{1,2}\/|~\/)/i.test(String(target ?? "").trim());
 }
 
 function extractTextMessageContent(rawContent, messageType = "text") {
