@@ -1,4 +1,8 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
+const DISCORD_COMPONENT_TYPE_ACTION_ROW = 1;
+const DISCORD_COMPONENT_TYPE_BUTTON = 2;
+const DISCORD_BUTTON_STYLE_SECONDARY = 2;
+const DISCORD_BUTTON_STYLE_SUCCESS = 3;
+const DISCORD_BUTTON_STYLE_DANGER = 4;
 
 export function buildResponseForServerRequest(method, params, decision) {
   if (method === "item/tool/requestUserInput") {
@@ -106,24 +110,34 @@ export function describeToolRequestUserInput(params) {
 export function buildApprovalActionRows(token, prefix, options = {}) {
   const disabled = options.disabled === true;
   const selectedDecision = options.selectedDecision ?? null;
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`${prefix}${token}:accept`)
-      .setLabel(selectedDecision === "accept" ? "Approved" : "Approve")
-      .setStyle(ButtonStyle.Success)
-      .setDisabled(disabled),
-    new ButtonBuilder()
-      .setCustomId(`${prefix}${token}:decline`)
-      .setLabel(selectedDecision === "decline" ? "Declined" : "Decline")
-      .setStyle(ButtonStyle.Danger)
-      .setDisabled(disabled),
-    new ButtonBuilder()
-      .setCustomId(`${prefix}${token}:cancel`)
-      .setLabel(selectedDecision === "cancel" ? "Canceled" : "Cancel")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(disabled)
-  );
-  return [row];
+  return [
+    {
+      type: DISCORD_COMPONENT_TYPE_ACTION_ROW,
+      components: [
+        {
+          type: DISCORD_COMPONENT_TYPE_BUTTON,
+          custom_id: `${prefix}${token}:accept`,
+          label: selectedDecision === "accept" ? "Approved" : "Approve",
+          style: DISCORD_BUTTON_STYLE_SUCCESS,
+          disabled
+        },
+        {
+          type: DISCORD_COMPONENT_TYPE_BUTTON,
+          custom_id: `${prefix}${token}:decline`,
+          label: selectedDecision === "decline" ? "Declined" : "Decline",
+          style: DISCORD_BUTTON_STYLE_DANGER,
+          disabled
+        },
+        {
+          type: DISCORD_COMPONENT_TYPE_BUTTON,
+          custom_id: `${prefix}${token}:cancel`,
+          label: selectedDecision === "cancel" ? "Canceled" : "Cancel",
+          style: DISCORD_BUTTON_STYLE_SECONDARY,
+          disabled
+        }
+      ]
+    }
+  ];
 }
 
 export function parseApprovalButtonCustomId(customId, prefix) {
