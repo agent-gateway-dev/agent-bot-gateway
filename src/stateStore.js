@@ -1,18 +1,21 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { makeScopedRouteId, parseLegacyRouteId, parseScopedRouteId } from "./bots/scopedRoutes.js";
 
 export class StateStore {
   #path;
   #state;
   #legacyThreadsDropped;
+  #bots;
 
-  constructor(filePath) {
+  constructor(filePath, options = {}) {
     this.#path = filePath;
     this.#state = {
       schemaVersion: 2,
       threadBindings: {}
     };
     this.#legacyThreadsDropped = 0;
+    this.#bots = options.bots && typeof options.bots === "object" && !Array.isArray(options.bots) ? options.bots : {};
   }
 
   async load() {
@@ -25,14 +28,15 @@ export class StateStore {
           ? parsed.threads
           : {};
       this.#legacyThreadsDropped = Object.keys(legacyThreads).length;
+      const rawThreadBindings =
+        parsed && typeof parsed.threadBindings === "object" && parsed.threadBindings !== null
+          ? parsed.threadBindings
+          : parsed && typeof parsed.channelBindings === "object" && parsed.channelBindings !== null
+            ? parsed.channelBindings
+            : {};
       this.#state = {
         schemaVersion: 2,
-        threadBindings:
-          parsed && typeof parsed.threadBindings === "object" && parsed.threadBindings !== null
-            ? { ...parsed.threadBindings }
-            : parsed && typeof parsed.channelBindings === "object" && parsed.channelBindings !== null
-              ? { ...parsed.channelBindings }
-              : {}
+        threadBindings: this.#normalizeThreadBindings(rawThreadBindings)
       };
     } catch (error) {
       if (error?.code !== "ENOENT") {
@@ -59,8 +63,16 @@ export class StateStore {
   }
 
   setBinding(discordThreadChannelId, binding) {
+    const scopedRoute = parseScopedRouteId(discordThreadChannelId);
     this.#state.threadBindings[discordThreadChannelId] = {
       ...binding,
+      ...(scopedRoute
+        ? {
+            botId: binding?.botId ?? scopedRoute.botId,
+            externalRouteId: binding?.externalRouteId ?? scopedRoute.externalRouteId,
+            repoChannelId: binding?.repoChannelId ?? discordThreadChannelId
+          }
+        : {}),
       updatedAt: new Date().toISOString()
     };
   }
@@ -107,5 +119,57 @@ export class StateStore {
 
   snapshot() {
     return structuredClone(this.#state);
+  }
+
+  #normalizeThreadBindings(rawThreadBindings) {
+    const normalizedBindings = {};
+    const entries =
+      rawThreadBindings && typeof rawThreadBindings === "object" && !Array.isArray(rawThreadBindings)
+        ? Object.entries(rawThreadBindings)
+        : [];
+
+    for (const [routeId, binding] of entries) {
+      const scopedRoute = parseScopedRouteId(routeId);
+      if (scopedRoute) {
+        normalizedBindings[routeId] = {
+          ...(binding && typeof binding === "object" && !Array.isArray(binding) ? binding : {}),
+          botId: binding?.botId ?? scopedRoute.botId,
+          externalRouteId: binding?.externalRouteId ?? scopedRoute.externalRouteId,
+          repoChannelId: binding?.repoChannelId ?? routeId
+        };
+        continue;
+      }
+
+      const legacyRoute = parseLegacyRouteId(routeId);
+      if (!legacyRoute) {
+        continue;
+      }
+      const candidateBotIds = this.#getCandidateBotIdsForPlatform(legacyRoute.platform);
+      if (candidateBotIds.length === 0) {
+        normalizedBindings[routeId] = binding;
+        continue;
+      }
+      if (candidateBotIds.length > 1) {
+        console.warn(`Dropped ambiguous legacy binding for ${routeId}; multiple ${legacyRoute.platform} bots are configured.`);
+        continue;
+      }
+
+      const scopedRouteId = makeScopedRouteId(candidateBotIds[0], legacyRoute.externalRouteId);
+      normalizedBindings[scopedRouteId] = {
+        ...(binding && typeof binding === "object" && !Array.isArray(binding) ? binding : {}),
+        botId: candidateBotIds[0],
+        platform: legacyRoute.platform,
+        externalRouteId: legacyRoute.externalRouteId,
+        repoChannelId: scopedRouteId
+      };
+    }
+
+    return normalizedBindings;
+  }
+
+  #getCandidateBotIdsForPlatform(platform) {
+    return Object.entries(this.#bots)
+      .filter(([, bot]) => String(bot?.platform ?? "").trim().toLowerCase() === platform)
+      .map(([botId]) => botId);
   }
 }

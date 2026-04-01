@@ -44,7 +44,7 @@ export async function loadRuntimeBootstrapConfig() {
 
   config.bots = resolvedBots;
   let channelSetups = { ...config.channels };
-  const state = new StateStore(statePath);
+  const state = new StateStore(statePath, { bots: config.bots });
   await state.load();
   const legacyThreadsDropped = state.consumeLegacyDropCount();
   if (legacyThreadsDropped > 0) {
