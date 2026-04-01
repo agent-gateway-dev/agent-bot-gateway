@@ -1,3 +1,5 @@
+import { parseScopedRouteId } from "../bots/scopedRoutes.js";
+
 export function createPlatformRegistry(platforms) {
   const registeredPlatforms = Array.isArray(platforms) ? platforms.filter(Boolean) : [];
 
@@ -9,8 +11,20 @@ export function createPlatformRegistry(platforms) {
     return registeredPlatforms.filter((platform) => platform.enabled !== false);
   }
 
-  function getPlatform(platformId) {
-    return registeredPlatforms.find((platform) => platform.platformId === platformId) ?? null;
+  function getPlatform(platformId, botId = null) {
+    const normalizedPlatformId = String(platformId ?? "").trim();
+    const normalizedBotId = String(botId ?? "").trim();
+    return (
+      registeredPlatforms.find((platform) => {
+        if (platform.platformId !== normalizedPlatformId) {
+          return false;
+        }
+        if (!normalizedBotId) {
+          return true;
+        }
+        return String(platform?.botId ?? "").trim() === normalizedBotId;
+      }) ?? null
+    );
   }
 
   function getCapabilities(platformId) {
@@ -30,12 +44,17 @@ export function createPlatformRegistry(platforms) {
     if (!normalizedRouteId) {
       return null;
     }
+    const scopedRoute = parseScopedRouteId(normalizedRouteId);
+    const targetRouteId = scopedRoute?.externalRouteId ?? normalizedRouteId;
 
     for (const platform of listEnabledPlatforms()) {
-      if (typeof platform.canHandleRouteId === "function" && !platform.canHandleRouteId(normalizedRouteId)) {
+      if (scopedRoute && String(platform?.botId ?? "").trim() !== scopedRoute.botId) {
         continue;
       }
-      const channel = await platform.fetchChannelByRouteId?.(normalizedRouteId);
+      if (typeof platform.canHandleRouteId === "function" && !platform.canHandleRouteId(targetRouteId)) {
+        continue;
+      }
+      const channel = await platform.fetchChannelByRouteId?.(targetRouteId);
       if (channel) {
         return channel;
       }
@@ -77,6 +96,8 @@ export function createPlatformRegistry(platforms) {
       } catch (error) {
         summaries.push({
           platformId: platform.platformId,
+          ...(platform?.botId ? { botId: platform.botId } : {}),
+          ...(platform?.instanceKey ? { instanceKey: platform.instanceKey } : {}),
           started: false,
           startError: error
         });
@@ -93,7 +114,12 @@ export function createPlatformRegistry(platforms) {
       }
       const summary = await platform.bootstrapRoutes(options);
       if (summary) {
-        summaries.push({ platformId: platform.platformId, ...summary });
+        summaries.push({
+          platformId: platform.platformId,
+          ...(platform?.botId ? { botId: platform.botId } : {}),
+          ...(platform?.instanceKey ? { instanceKey: platform.instanceKey } : {}),
+          ...summary
+        });
       }
     }
     return summaries;

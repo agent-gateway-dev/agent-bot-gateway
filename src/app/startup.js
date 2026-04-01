@@ -109,26 +109,28 @@ export async function startBridgeRuntime({
   }
 }
 
-function summarizePlatformReadiness(platformRegistry, platformStartSummaries) {
+export function summarizePlatformReadiness(platformRegistry, platformStartSummaries) {
   const enabledPlatforms = platformRegistry?.listEnabledPlatforms?.() ?? [];
   const summariesById = new Map(
     platformStartSummaries
       .filter(Boolean)
-      .map((summary) => [String(summary.platformId ?? "").trim(), summary])
-      .filter(([platformId]) => platformId)
+      .map((summary) => [getPlatformSummaryKey(summary), summary])
+      .filter(([platformKey]) => platformKey)
   );
   const degradedPlatforms = [];
 
   for (const platform of enabledPlatforms) {
     const platformId = String(platform?.platformId ?? "").trim();
-    if (!platformId) {
+    const platformKey = getPlatformSummaryKey(platform);
+    if (!platformId || !platformKey) {
       continue;
     }
 
-    const summary = summariesById.get(platformId);
+    const summary = summariesById.get(platformKey);
     if (!summary) {
       degradedPlatforms.push({
         platformId,
+        ...(platform?.botId ? { botId: platform.botId } : {}),
         reason: "missing_start_summary"
       });
       continue;
@@ -137,6 +139,7 @@ function summarizePlatformReadiness(platformRegistry, platformStartSummaries) {
     if (summary.startError) {
       degradedPlatforms.push({
         platformId,
+        ...(summary?.botId ? { botId: summary.botId } : platform?.botId ? { botId: platform.botId } : {}),
         reason: "startup_failed",
         message: summary.startError.message
       });
@@ -146,6 +149,7 @@ function summarizePlatformReadiness(platformRegistry, platformStartSummaries) {
     if (summary.started !== true) {
       degradedPlatforms.push({
         platformId,
+        ...(summary?.botId ? { botId: summary.botId } : platform?.botId ? { botId: platform.botId } : {}),
         reason: "not_started"
       });
     }
@@ -155,4 +159,9 @@ function summarizePlatformReadiness(platformRegistry, platformStartSummaries) {
     ready: degradedPlatforms.length === 0,
     degradedPlatforms
   };
+}
+
+function getPlatformSummaryKey(entry) {
+  const instanceKey = String(entry?.instanceKey ?? entry?.botId ?? entry?.platformId ?? "").trim();
+  return instanceKey || null;
 }
