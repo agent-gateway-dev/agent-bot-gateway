@@ -7,7 +7,8 @@ Multi-platform agent gateway for Codex app-server and Claude Code.
 ## What It Does
 
 - Bridges Discord and Feishu chats into route-scoped agent sessions.
-- Supports mixed Codex and Claude runtimes from one shared `channels.json`.
+- Supports multiple Discord and Feishu bot instances at the same time, with each bot fixed to either `codex` or `claude`.
+- Uses top-level `bots` config for fixed-runtime deployments, while keeping legacy single-bot `channels` compatibility.
 - Auto-discovers Discord project routes from Codex `cwd` metadata and manages project channels under `codex-projects`.
 - Supports config-driven Feishu route bindings plus open unbound-chat fallback mode.
 - Persists one session binding per route:
@@ -111,9 +112,9 @@ sequenceDiagram
 
 | Platform | Route type | How it is created | Write mode | Notes |
 | --- | --- | --- | --- | --- |
-| Discord | Managed repo text channel | Auto-discovered from Codex `cwd`, or bound with `!initrepo` | Writable by default | Plain text messages become prompts |
+| Discord | Managed repo text channel | Auto-discovered from Codex `cwd`, or bound with `!initrepo` on a Codex-backed Discord bot | Writable by default | Plain text messages become prompts |
 | Discord | `#general` | Existing text channel matched by ID or name | Read-only | Useful for discussion and planning |
-| Feishu | Mapped repo chat | Explicit `feishu:<chat_id>` entry in `config/channels.json` | Writable by default | Text, image, and file input; platform-native replies and uploads |
+| Feishu | Mapped repo chat | Preferred: `bots.<botId>.routes.<chat_id>` in `config/channels.json` | Writable by default | Text, image, and file input; platform-native replies and uploads |
 | Feishu | Open unbound chat | Any chat when `FEISHU_UNBOUND_CHAT_MODE=open` | Writable by default | Falls back to `FEISHU_UNBOUND_CHAT_CWD`, then `WORKSPACE_ROOT`, then bridge cwd |
 | Feishu | General chat | `FEISHU_GENERAL_CHAT_ID` | Read-only | Similar to Discord `#general` |
 
@@ -141,8 +142,10 @@ sequenceDiagram
 ### Route Binding Model
 
 - A route is the stable chat identifier the bridge uses internally.
-- Discord routes use the raw text channel id.
-- Feishu routes use `feishu:<chat_id>`.
+- Each live chat route belongs to exactly one configured bot instance.
+- Discord external route ids use the raw text channel id inside `bots.<botId>.routes`.
+- Feishu external route ids use the raw `chat_id` inside `bots.<botId>.routes`.
+- Internal queue/state keys are namespaced as `bot:<botId>:route:<externalRouteId>`.
 - Each route resolves to one setup object: `cwd`, `model`, mode, and write policy.
 - Each route also maps to one persistent runtime session binding in `data/state.json`.
 
@@ -163,11 +166,9 @@ sequenceDiagram
 
 - Agent definitions are loaded from `channels.json > agents`.
 - Each agent can specify `runtime: "codex"` or `runtime: "claude"` to choose the backend.
-- Each route resolves `agentId + model + runtime` in this order: route override -> `defaultAgent` -> runtime fallback.
-- Runtime priority for route resolution:
-  1. Persisted binding runtime (from previous turn, stored in `data/state.json`)
-  2. Agent runtime (from `agents[id].runtime` in config)
-  3. Global runtime (from `runtime` field or `AGENT_RUNTIME` env var)
+- In multi-bot mode, the bot is the runtime source of truth: every route handled by that bot uses the bot's fixed runtime.
+- Agent/runtime mismatches are rejected at config load time. A `claude` bot cannot host a `codex` agent route, and vice versa.
+- Route resolution still chooses `agentId + model` in this order: route override -> `defaultAgent` -> default model fallback.
 - Agent capabilities are checked through a shared registry instead of per-platform hardcoding.
 - Current capability in active use: `supportsImageInput`.
 
@@ -246,7 +247,7 @@ Optional hardening and routing overrides:
 # FEISHU_WEBHOOK_PATH=/feishu/events
 ```
 
-Feishu repo chats do not auto-discover. New chats are usable by default through the open unbound workspace, which falls back to `FEISHU_UNBOUND_CHAT_CWD`, then `WORKSPACE_ROOT`, and finally the bridge working directory. Add `feishu:<chat_id>` mappings to `config/channels.json` when you want a stable per-chat repo binding.
+Feishu repo chats do not auto-discover. New chats are usable by default through the open unbound workspace, which falls back to `FEISHU_UNBOUND_CHAT_CWD`, then `WORKSPACE_ROOT`, and finally the bridge working directory. Add `bots.<botId>.routes.<chat_id>` mappings to `config/channels.json` when you want a stable per-chat repo binding, or keep using legacy top-level `feishu:<chat_id>` keys in single-bot mode.
 
 Transport notes:
 
@@ -311,7 +312,7 @@ curl -i http://127.0.0.1:8788/readyz
 | --- | --- | --- | --- | --- |
 | Help | `!help` | `/help` | `/help` | Show usage and current command set |
 | Ask | `!ask <prompt>` | `/ask prompt:<text>` | `/ask <prompt>` | Repo channel or mapped chat |
-| Status | `!status` | `/status` | `/status` | Queue depth, thread, sandbox, mode |
+| Status | `!status` | `/status` | `/status` | Queue depth, session, sandbox, mode |
 | New thread | `!new` | `/new` | `/new` | Clears current runtime session binding |
 | Restart | `!restart [reason]` | `/restart` | `/restart [reason]` | Requires supervisor/service to act on restart file |
 | Interrupt | `!interrupt` | `/interrupt` | `/interrupt` | Interrupts current turn |
@@ -325,7 +326,7 @@ curl -i http://127.0.0.1:8788/readyz
 | Quick decline | `!n` | Not supported | `/n` | Declines latest pending approval (alias for `!decline`) |
 | Screen | `!screen` | Not supported | `/screen` | Shows last 60 lines of active turn output |
 | Log | `!log [n]` | Not supported | `/log [n]` | Shows last n lines of output (default 20, max 200) |
-| Init repo | `!initrepo [force]` | `/initrepo` | Not supported | Discord only, requires `WORKSPACE_ROOT` |
+| Init repo | `!initrepo [force]` | `/initrepo` | Not supported | Discord only, requires `WORKSPACE_ROOT`, and only on bots fixed to `codex` |
 | Create channel | `!mkchannel <name>` | Not supported | Not supported | Discord only, requires `Manage Channels` |
 | Create repo channel | `!mkrepo <name>` | Not supported | Not supported | Creates a new Discord text channel plus a repo binding under `WORKSPACE_ROOT` |
 | Create bound channel | `!mkbind <name> <abs-path>` | Not supported | Not supported | Creates a new Discord text channel already bound to an existing absolute path |
@@ -336,8 +337,8 @@ curl -i http://127.0.0.1:8788/readyz
 | Clear model | `!clearmodel` | Not supported | Not supported | Removes the per-channel model override |
 | Set agent | `!setagent <agent-id>` | Not supported | Not supported | Persists a per-channel agent override |
 | Clear agent | `!clearagent` | Not supported | Not supported | Removes the per-channel agent override |
-| Resync | `!resync` | `/resync` | `/resync` | Re-syncs Discord managed channels |
-| Rebuild | `!rebuild` | `/rebuild` | `/rebuild` | Recreates managed Discord project channels |
+| Resync | `!resync` | `/resync` | Not supported | Re-syncs Discord managed channels; only on bots fixed to `codex` |
+| Rebuild | `!rebuild` | `/rebuild` | Not supported | Recreates managed Discord project channels; only on bots fixed to `codex` |
 | Join bot | Not supported | Not supported | `/joinbot <chat_id|feishu:chat_id>` | Feishu only; invites the current app bot into another chat |
 
 Approval buttons are available on Discord when approvals are enabled.
@@ -427,6 +428,7 @@ Use `.env.example` as the exhaustive reference. The most important variables are
 
 `config/channels.json` is optional, but it becomes the source of truth for:
 
+- bot registry (`bots.<botId>`) in fixed-runtime multi-bot deployments
 - fixed channel/chat bindings
 - model overrides
 - access control defaults
@@ -435,7 +437,7 @@ Use `.env.example` as the exhaustive reference. The most important variables are
 - persistent manual route rebindings made with `setpath`
 - default agent and per-route agent overrides
 
-Example:
+Preferred multi-bot example:
 
 ```json
 {
@@ -444,22 +446,50 @@ Example:
   "defaultEffort": "medium",
   "approvalPolicy": "never",
   "sandboxMode": "workspace-write",
-  "allowedUserIds": ["123456789012345678"],
-  "allowedFeishuUserIds": ["ou_xxxxxxxxxxxxxxxxx"],
-  "channels": {
-    "123456789012345678": {
-      "cwd": "/absolute/path/to/discord/repo",
-      "model": "gpt-5.3-codex"
+  "defaultAgent": "codex-default",
+  "agents": {
+    "codex-default": {
+      "model": "gpt-5.3-codex",
+      "runtime": "codex"
     },
-    "feishu:oc_xxxxxxxxxxxxxxxxx": {
-      "cwd": "/absolute/path/to/feishu/repo",
-      "model": "gpt-5.3-codex"
+    "claude-default": {
+      "model": "claude-sonnet-4-6",
+      "runtime": "claude"
+    }
+  },
+  "bots": {
+    "discord-main": {
+      "platform": "discord",
+      "runtime": "codex",
+      "auth": {
+        "tokenEnv": "DISCORD_BOT_TOKEN_MAIN"
+      },
+      "routes": {
+        "123456789012345678": {
+          "cwd": "/absolute/path/to/discord/repo",
+          "agentId": "codex-default"
+        }
+      }
+    },
+    "feishu-support": {
+      "platform": "feishu",
+      "runtime": "claude",
+      "auth": {
+        "appIdEnv": "FEISHU_APP_ID_SUPPORT",
+        "appSecretEnv": "FEISHU_APP_SECRET_SUPPORT"
+      },
+      "routes": {
+        "oc_xxxxxxxxxxxxxxxxx": {
+          "cwd": "/absolute/path/to/feishu/repo",
+          "agentId": "claude-default"
+        }
+      }
     }
   }
 }
 ```
 
-Multi-agent example:
+Legacy single-bot compatibility example:
 
 ```json
 {
@@ -504,8 +534,11 @@ Agent routing notes:
 
 Route key rules:
 
-- Discord route key: raw text channel id
-- Feishu route key: `feishu:<chat_id>`
+- Preferred multi-bot config uses `bots.<botId>.routes.<externalRouteId>`.
+- Discord external route key: raw text channel id.
+- Feishu external route key: raw `chat_id`.
+- Internal queue/state keys are namespaced as `bot:<botId>:route:<externalRouteId>`.
+- Legacy single-bot configs can still use top-level `channels` with Discord raw ids or `feishu:<chat_id>`.
 
 Env precedence:
 
@@ -690,7 +723,8 @@ This is the shortest reliable way to bring Feishu online with the current bridge
 ### Feishu Identifier Notes
 
 - `chat_id` is the raw Feishu chat identifier.
-- `route_id` is the bridge key format: `feishu:<chat_id>`.
+- `/where` shows `route_id` in the Feishu bridge format `feishu:<chat_id>` for discovery and manual binding.
+- Internal state/queue keys are namespaced as `bot:<botId>:route:<chat_id>` once a bot-scoped route is active.
 - `sender_open_id` is the user identifier used by `FEISHU_ALLOWED_OPEN_IDS`.
 - `FEISHU_TRANSPORT=webhook` needs a callback URL; `FEISHU_TRANSPORT=long-connection` does not.
 - `FEISHU_VERIFICATION_TOKEN` is optional in the current bridge implementation. If unset, webhook token checks are skipped.
@@ -699,7 +733,7 @@ This is the shortest reliable way to bring Feishu online with the current bridge
 ### Feishu Operational Notes
 
 - Feishu chats are config-driven. They are not auto-created and not auto-discovered from Codex.
-- Feishu chats can also be rebound in-place with `/setpath /absolute/path`, which updates `config/channels.json`.
+- Feishu chats can also be rebound in-place with `/setpath /absolute/path`, which updates `bots.<botId>.routes` in multi-bot configs and top-level `channels` in legacy single-bot configs.
 - `FEISHU_GENERAL_CHAT_ID` creates one read-only general chat, similar to Discord `#general`.
 - `FEISHU_UNBOUND_CHAT_MODE=open` accepts unmapped Feishu chats immediately and grants the same sandbox/file-write capability as configured repo chats.
 - If `FEISHU_REQUIRE_MENTION_IN_GROUP=1`, plain prompts in group chats need an `@mention`; slash-style commands such as `/status` still work.

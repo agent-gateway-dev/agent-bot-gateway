@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { createCommandRouter } from "../src/commands/router.js";
+import { makeScopedRouteId } from "../src/bots/scopedRoutes.js";
 
 const tempDirs: string[] = [];
 
@@ -236,6 +237,160 @@ describe("command router setpath", () => {
 
     const persisted = JSON.parse(await fs.readFile(configPath, "utf8"));
     expect(persisted.channels["feishu:oc_1"]).toEqual({
+      cwd: newRepoPath,
+      model: "claude-3.7-sonnet"
+    });
+  });
+
+  test("persists multi-bot Feishu bindings under bots routes using scoped state keys", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-bridge-setpath-multibot-"));
+    tempDirs.push(tempDir);
+
+    const oldRepoPath = path.join(tempDir, "old-repo");
+    const newRepoPath = path.join(tempDir, "new-repo");
+    const configPath = path.join(tempDir, "channels.json");
+    const scopedRouteId = makeScopedRouteId("feishu-support", "oc_1");
+    await fs.mkdir(oldRepoPath, { recursive: true });
+    await fs.mkdir(newRepoPath, { recursive: true });
+    await fs.writeFile(
+      configPath,
+      JSON.stringify(
+        {
+          bots: {
+            "feishu-support": {
+              platform: "feishu",
+              runtime: "claude",
+              auth: {
+                appIdEnv: "FEISHU_APP_ID_SUPPORT",
+                appSecretEnv: "FEISHU_APP_SECRET_SUPPORT"
+              },
+              routes: {
+                oc_1: {
+                  cwd: oldRepoPath,
+                  model: "claude-3.7-sonnet"
+                }
+              }
+            }
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const replies: string[] = [];
+    const clearedBindings: string[] = [];
+    let saveCalls = 0;
+    let channelSetups: Record<string, { cwd: string; model?: string }> = {
+      [scopedRouteId]: {
+        cwd: oldRepoPath,
+        model: "claude-3.7-sonnet"
+      }
+    };
+
+    const router = createCommandRouter({
+      ChannelType: { GuildText: 0 },
+      isGeneralChannel: () => false,
+      fs,
+      path,
+      execFileAsync: async () => {},
+      repoRootPath: "/tmp/repos",
+      managedChannelTopicPrefix: "codex-cwd:",
+      codexBin: "codex",
+      codexHomeEnv: null,
+      statePath: path.join(tempDir, "state.json"),
+      configPath,
+      config: {
+        approvalPolicy: "never",
+        sandboxMode: "workspace-write",
+        defaultModel: "gpt-5.3-codex",
+        bots: {
+          "feishu-support": {
+            platform: "feishu",
+            runtime: "claude",
+            routes: {
+              oc_1: {
+                cwd: oldRepoPath,
+                model: "claude-3.7-sonnet"
+              }
+            }
+          }
+        }
+      },
+      state: {
+        getBinding: () => null,
+        clearBinding(routeId: string) {
+          clearedBindings.push(routeId);
+        },
+        save: async () => {
+          saveCalls += 1;
+        }
+      },
+      codex: { request: async () => {} },
+      bot: {
+        botId: "feishu-support",
+        platform: "feishu",
+        runtime: "claude"
+      },
+      pendingApprovals: new Map(),
+      makeChannelName: (value: string) => value,
+      collectImageAttachments: () => [],
+      buildTurnInputFromMessage: async () => [],
+      enqueuePrompt: () => {},
+      getQueue: () => ({ jobs: [] }),
+      findActiveTurnByRepoChannel: () => null,
+      requestSelfRestartFromDiscord: async () => {},
+      findLatestPendingApprovalTokenForChannel: () => null,
+      applyApprovalDecision: async () => ({ ok: true }),
+      safeReply: async (_message: unknown, content: string) => {
+        replies.push(content);
+      },
+      getChannelSetups: () => channelSetups,
+      setChannelSetups: (nextSetups: typeof channelSetups) => {
+        channelSetups = nextSetups;
+      },
+      getPlatformRegistry: () => null
+    });
+
+    await router.handleCommand(
+      {
+        channelId: "feishu:oc_1",
+        platform: "feishu",
+        channel: { id: "feishu:oc_1", chatId: "oc_1" },
+        author: { id: "user-1" }
+      },
+      `!setpath ${newRepoPath}`,
+      {
+        repoChannelId: scopedRouteId,
+        bot: {
+          botId: "feishu-support",
+          runtime: "claude"
+        },
+        setup: {
+          cwd: oldRepoPath,
+          model: "claude-3.7-sonnet",
+          runtime: "claude",
+          mode: "repo",
+          sandboxMode: "workspace-write",
+          allowFileWrites: true
+        }
+      }
+    );
+
+    expect(channelSetups).toEqual({
+      [scopedRouteId]: {
+        cwd: newRepoPath,
+        model: "claude-3.7-sonnet"
+      }
+    });
+    expect(clearedBindings).toEqual([scopedRouteId]);
+    expect(saveCalls).toBe(1);
+    expect(replies[0]).toContain(`Bound this chat to \`${newRepoPath}\`.`);
+
+    const persisted = JSON.parse(await fs.readFile(configPath, "utf8"));
+    expect(persisted.channels).toBeUndefined();
+    expect(persisted.bots["feishu-support"].routes.oc_1).toEqual({
       cwd: newRepoPath,
       model: "claude-3.7-sonnet"
     });

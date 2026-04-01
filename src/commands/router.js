@@ -1,4 +1,6 @@
 import { getActiveAgentId, setupSupportsImageInput } from "../agents/setupResolution.js";
+import { makeFeishuRouteId, parseFeishuRouteId } from "../feishu/ids.js";
+import { makeScopedRouteId, parseScopedRouteId } from "../bots/scopedRoutes.js";
 
 export function createCommandRouter(deps) {
   const {
@@ -215,7 +217,8 @@ export function createCommandRouter(deps) {
         return;
       }
 
-      const existingSetup = getChannelSetups()[message.channelId];
+      const routeTarget = resolveRouteTarget(message, context);
+      const existingSetup = getRouteSetup(getChannelSetups(), routeTarget);
       if (!existingSetup?.cwd) {
         await safeReply(message, "This channel is not bound to a repo path.");
         return;
@@ -225,11 +228,11 @@ export function createCommandRouter(deps) {
         ...existingSetup,
         model: nextModel
       };
-      await persistChannelSetupToConfig(fs, path, configPath, message.channelId, nextSetup);
+      await persistChannelSetupToConfig(fs, path, configPath, routeTarget, nextSetup);
 
-      const nextSetups = { ...getChannelSetups() };
-      nextSetups[message.channelId] = nextSetup;
+      const nextSetups = applyRouteSetupToSetups({ ...getChannelSetups() }, routeTarget, nextSetup);
       setChannelSetups(nextSetups);
+      upsertRouteSetupInConfig(config, routeTarget, nextSetup);
 
       await safeReply(message, `Set this channel model override to \`${nextModel}\`.`);
       return;
@@ -241,7 +244,8 @@ export function createCommandRouter(deps) {
         return;
       }
 
-      const existingSetup = getChannelSetups()[message.channelId];
+      const routeTarget = resolveRouteTarget(message, context);
+      const existingSetup = getRouteSetup(getChannelSetups(), routeTarget);
       if (!existingSetup?.cwd) {
         await safeReply(message, "This channel is not bound to a repo path.");
         return;
@@ -255,11 +259,11 @@ export function createCommandRouter(deps) {
         ...existingSetup
       };
       delete nextSetup.model;
-      await persistChannelSetupToConfig(fs, path, configPath, message.channelId, nextSetup);
+      await persistChannelSetupToConfig(fs, path, configPath, routeTarget, nextSetup);
 
-      const nextSetups = { ...getChannelSetups() };
-      nextSetups[message.channelId] = nextSetup;
+      const nextSetups = applyRouteSetupToSetups({ ...getChannelSetups() }, routeTarget, nextSetup);
       setChannelSetups(nextSetups);
+      upsertRouteSetupInConfig(config, routeTarget, nextSetup);
 
       await safeReply(message, `Cleared this channel model override. It will now use the default model \`${config.defaultModel}\`.`);
       return;
@@ -292,7 +296,8 @@ export function createCommandRouter(deps) {
         return;
       }
 
-      const existingSetup = getChannelSetups()[message.channelId];
+      const routeTarget = resolveRouteTarget(message, context);
+      const existingSetup = getRouteSetup(getChannelSetups(), routeTarget);
       if (!existingSetup?.cwd) {
         await safeReply(message, "This channel is not bound to a repo path.");
         return;
@@ -302,11 +307,11 @@ export function createCommandRouter(deps) {
         ...existingSetup,
         agentId: nextAgentId
       };
-      await persistChannelSetupToConfig(fs, path, configPath, message.channelId, nextSetup);
+      await persistChannelSetupToConfig(fs, path, configPath, routeTarget, nextSetup);
 
-      const nextSetups = { ...getChannelSetups() };
-      nextSetups[message.channelId] = nextSetup;
+      const nextSetups = applyRouteSetupToSetups({ ...getChannelSetups() }, routeTarget, nextSetup);
       setChannelSetups(nextSetups);
+      upsertRouteSetupInConfig(config, routeTarget, nextSetup);
 
       await safeReply(message, `Set this channel agent override to \`${nextAgentId}\`.`);
       return;
@@ -318,7 +323,8 @@ export function createCommandRouter(deps) {
         return;
       }
 
-      const existingSetup = getChannelSetups()[message.channelId];
+      const routeTarget = resolveRouteTarget(message, context);
+      const existingSetup = getRouteSetup(getChannelSetups(), routeTarget);
       if (!existingSetup?.cwd) {
         await safeReply(message, "This channel is not bound to a repo path.");
         return;
@@ -332,11 +338,11 @@ export function createCommandRouter(deps) {
         ...existingSetup
       };
       delete nextSetup.agentId;
-      await persistChannelSetupToConfig(fs, path, configPath, message.channelId, nextSetup);
+      await persistChannelSetupToConfig(fs, path, configPath, routeTarget, nextSetup);
 
-      const nextSetups = { ...getChannelSetups() };
-      nextSetups[message.channelId] = nextSetup;
+      const nextSetups = applyRouteSetupToSetups({ ...getChannelSetups() }, routeTarget, nextSetup);
       setChannelSetups(nextSetups);
+      upsertRouteSetupInConfig(config, routeTarget, nextSetup);
 
       await safeReply(message, "Cleared this channel agent override. It will now use the default agent.");
       return;
@@ -580,12 +586,32 @@ export function createCommandRouter(deps) {
     return String(message?.platform ?? "discord").trim().toLowerCase() || "discord";
   }
 
+  function resolveRouteTarget(message, context = null) {
+    const platformId = String(context?.bot?.platform ?? bot?.platform ?? inferPlatformId(message)).trim().toLowerCase() || "discord";
+    const contextRouteId = String(context?.repoChannelId ?? "").trim();
+    const scopedRoute = parseScopedRouteId(contextRouteId);
+    const botId = String(context?.bot?.botId ?? bot?.botId ?? scopedRoute?.botId ?? "").trim();
+    const rawChannelId = String(message?.channelId ?? message?.channel?.id ?? "").trim();
+    const rawFeishuRouteId = rawChannelId || String(message?.channel?.chatId ?? "").trim();
+    const feishuExternalRouteId =
+      parseFeishuRouteId(rawFeishuRouteId) ?? String(message?.channel?.chatId ?? "").trim() ?? rawFeishuRouteId;
+    const externalRouteId =
+      scopedRoute?.externalRouteId ??
+      (platformId === "feishu" ? feishuExternalRouteId || rawFeishuRouteId : rawChannelId);
+    const legacyRouteId = platformId === "feishu" ? makeFeishuRouteId(externalRouteId) || rawFeishuRouteId : externalRouteId;
+    const repoChannelId = contextRouteId || makeScopedRouteId(botId, externalRouteId) || legacyRouteId;
+
+    return {
+      platformId,
+      botId: botId || null,
+      externalRouteId: externalRouteId || null,
+      legacyRouteId: legacyRouteId || null,
+      repoChannelId
+    };
+  }
+
   function resolveRepoChannelId(message, context = null) {
-    const scopedRouteId = String(context?.repoChannelId ?? "").trim();
-    if (scopedRouteId) {
-      return scopedRouteId;
-    }
-    return String(message?.channelId ?? "").trim();
+    return resolveRouteTarget(message, context).repoChannelId;
   }
 
   function resolveRuntime(context = null) {
@@ -654,8 +680,8 @@ export function createCommandRouter(deps) {
   }
 
   async function handleSetPathCommand(message, rest, context = null) {
-    const routeId = String(message?.channelId ?? "").trim();
-    if (!routeId) {
+    const routeTarget = resolveRouteTarget(message, context);
+    if (!routeTarget.repoChannelId) {
       await safeReply(message, "Unable to determine the current chat route.");
       return;
     }
@@ -680,13 +706,13 @@ export function createCommandRouter(deps) {
     }
 
     const channelSetups = getChannelSetups();
-    const existingSetup = channelSetups[routeId] ?? null;
+    const existingSetup = getRouteSetup(channelSetups, routeTarget);
     if (existingSetup?.cwd === targetPath) {
       await safeReply(message, `This chat is already bound to \`${targetPath}\`.`);
       return;
     }
 
-    const explicitModel = pickExplicitModelOverride(existingSetup, config.channels?.[routeId]);
+    const explicitModel = pickExplicitModelOverride(existingSetup, getConfiguredRouteSetup(config, routeTarget));
 
     const nextSetup = {
       cwd: targetPath,
@@ -694,19 +720,13 @@ export function createCommandRouter(deps) {
       ...(typeof explicitModel === "string" ? { model: explicitModel } : {})
     };
 
-    await persistChannelSetupToConfig(fs, path, configPath, routeId, nextSetup);
+    await persistChannelSetupToConfig(fs, path, configPath, routeTarget, nextSetup);
 
-    const nextSetups = {
-      ...channelSetups,
-      [routeId]: nextSetup
-    };
+    const nextSetups = applyRouteSetupToSetups({ ...channelSetups }, routeTarget, nextSetup);
     setChannelSetups(nextSetups);
+    upsertRouteSetupInConfig(config, routeTarget, nextSetup);
 
-    if (config.channels && typeof config.channels === "object") {
-      config.channels[routeId] = { ...nextSetup };
-    }
-
-    state.clearBinding(routeId);
+    state.clearBinding(routeTarget.repoChannelId);
     await state.save();
 
     if (
@@ -717,7 +737,7 @@ export function createCommandRouter(deps) {
       const nextTopic = upsertTopicTag(message.channel.topic, managedChannelTopicPrefix, targetPath);
       if (nextTopic !== message.channel.topic) {
         await message.channel.setTopic(nextTopic).catch((error) => {
-          console.warn(`failed setting channel topic for ${routeId}: ${error.message}`);
+          console.warn(`failed setting channel topic for ${routeTarget.repoChannelId}: ${error.message}`);
         });
       }
     }
@@ -892,24 +912,25 @@ export function createCommandRouter(deps) {
       return;
     }
 
+    const routeTarget = resolveRouteTarget(message);
     const channelSetups = getChannelSetups();
-    const existingSetup = channelSetups[message.channelId];
+    const existingSetup = getRouteSetup(channelSetups, routeTarget);
     if (!existingSetup) {
       await safeReply(message, "This channel is not bound to a repo path.");
       return;
     }
 
-    const nextSetups = { ...channelSetups };
-    delete nextSetups[message.channelId];
-    await removeChannelSetupFromConfig(fs, path, configPath, message.channelId);
+    const nextSetups = removeRouteSetupFromSetups({ ...channelSetups }, routeTarget);
+    await removeChannelSetupFromConfig(fs, path, configPath, routeTarget);
     setChannelSetups(nextSetups);
-    state.clearBinding(message.channelId);
+    removeRouteSetupFromConfigObject(config, routeTarget);
+    state.clearBinding(routeTarget.repoChannelId);
     await state.save();
 
     const nextTopic = removeTopicTag(message.channel.topic, managedChannelTopicPrefix);
     if (nextTopic !== message.channel.topic) {
       await message.channel.setTopic(nextTopic).catch((error) => {
-        console.warn(`failed clearing channel topic for ${message.channelId}: ${error.message}`);
+        console.warn(`failed clearing channel topic for ${routeTarget.repoChannelId}: ${error.message}`);
       });
     }
 
@@ -920,24 +941,29 @@ export function createCommandRouter(deps) {
   }
 
   async function bindChannelToPath(channel, channelId, repoPath, options = {}) {
+    const routeTarget = resolveRouteTarget({
+      channelId,
+      channel,
+      platform: String(bot?.platform ?? "discord").trim().toLowerCase() || "discord"
+    });
     const nextSetup = {
       cwd: repoPath,
       ...(typeof options.agentId === "string" ? { agentId: options.agentId } : {}),
       ...(typeof options.model === "string" ? { model: options.model } : {})
     };
 
-    await persistChannelSetupToConfig(fs, path, configPath, channelId, nextSetup);
+    await persistChannelSetupToConfig(fs, path, configPath, routeTarget, nextSetup);
 
-    const nextSetups = { ...getChannelSetups() };
-    nextSetups[channelId] = nextSetup;
+    const nextSetups = applyRouteSetupToSetups({ ...getChannelSetups() }, routeTarget, nextSetup);
     setChannelSetups(nextSetups);
-    state.clearBinding(channelId);
+    upsertRouteSetupInConfig(config, routeTarget, nextSetup);
+    state.clearBinding(routeTarget.repoChannelId);
     await state.save();
 
     const nextTopic = upsertTopicTag(channel.topic, managedChannelTopicPrefix, repoPath);
     if (nextTopic !== channel.topic && typeof channel.setTopic === "function") {
       await channel.setTopic(nextTopic).catch((error) => {
-        console.warn(`failed setting channel topic for ${channelId}: ${error.message}`);
+        console.warn(`failed setting channel topic for ${routeTarget.repoChannelId}: ${error.message}`);
       });
     }
   }
@@ -1103,33 +1129,158 @@ async function pathExists(fsModule, targetPath) {
   }
 }
 
-async function persistChannelSetupToConfig(fsModule, pathModule, targetConfigPath, channelId, setup) {
-  const document = await readConfigDocument(fsModule, targetConfigPath);
-  const channels =
-    document && typeof document.channels === "object" && document.channels !== null && !Array.isArray(document.channels)
-      ? { ...document.channels }
-      : {};
+function getRouteSetup(channelSetups, routeTarget) {
+  if (!routeTarget?.repoChannelId) {
+    return null;
+  }
+  return (
+    channelSetups?.[routeTarget.repoChannelId] ??
+    channelSetups?.[routeTarget.legacyRouteId] ??
+    channelSetups?.[routeTarget.externalRouteId] ??
+    null
+  );
+}
 
-  channels[channelId] = {
+function applyRouteSetupToSetups(channelSetups, routeTarget, setup) {
+  const nextSetups = { ...(channelSetups ?? {}) };
+  for (const candidateKey of [routeTarget?.legacyRouteId, routeTarget?.externalRouteId]) {
+    if (candidateKey && candidateKey !== routeTarget?.repoChannelId) {
+      delete nextSetups[candidateKey];
+    }
+  }
+  if (routeTarget?.repoChannelId) {
+    nextSetups[routeTarget.repoChannelId] = setup;
+  }
+  return nextSetups;
+}
+
+function removeRouteSetupFromSetups(channelSetups, routeTarget) {
+  const nextSetups = { ...(channelSetups ?? {}) };
+  for (const candidateKey of [routeTarget?.repoChannelId, routeTarget?.legacyRouteId, routeTarget?.externalRouteId]) {
+    if (candidateKey) {
+      delete nextSetups[candidateKey];
+    }
+  }
+  return nextSetups;
+}
+
+function getConfiguredRouteSetup(config, routeTarget) {
+  if (routeTarget?.botId && config?.bots?.[routeTarget.botId]?.routes?.[routeTarget.externalRouteId]) {
+    return config.bots[routeTarget.botId].routes[routeTarget.externalRouteId];
+  }
+  return config?.channels?.[routeTarget?.legacyRouteId] ?? config?.channels?.[routeTarget?.repoChannelId] ?? null;
+}
+
+function upsertRouteSetupInConfig(config, routeTarget, setup) {
+  if (!config || typeof config !== "object") {
+    return;
+  }
+  if (routeTarget?.botId) {
+    if (!config.bots || typeof config.bots !== "object") {
+      config.bots = {};
+    }
+    const botConfig = config.bots[routeTarget.botId] ?? {};
+    const routes =
+      botConfig.routes && typeof botConfig.routes === "object" && !Array.isArray(botConfig.routes)
+        ? { ...botConfig.routes }
+        : {};
+    routes[routeTarget.externalRouteId] = buildPersistedSetup(setup);
+    config.bots[routeTarget.botId] = {
+      ...botConfig,
+      routes
+    };
+    return;
+  }
+
+  if (!config.channels || typeof config.channels !== "object") {
+    config.channels = {};
+  }
+  config.channels[routeTarget.legacyRouteId] = buildPersistedSetup(setup);
+}
+
+function removeRouteSetupFromConfigObject(config, routeTarget) {
+  if (!config || typeof config !== "object") {
+    return;
+  }
+  if (routeTarget?.botId) {
+    const routes = config?.bots?.[routeTarget.botId]?.routes;
+    if (routes && typeof routes === "object") {
+      delete routes[routeTarget.externalRouteId];
+    }
+    return;
+  }
+
+  if (config.channels && typeof config.channels === "object") {
+    delete config.channels[routeTarget.legacyRouteId];
+    if (routeTarget.repoChannelId && routeTarget.repoChannelId !== routeTarget.legacyRouteId) {
+      delete config.channels[routeTarget.repoChannelId];
+    }
+  }
+}
+
+async function persistChannelSetupToConfig(fsModule, pathModule, targetConfigPath, routeTarget, setup) {
+  const document = await readConfigDocument(fsModule, targetConfigPath);
+  if (routeTarget?.botId) {
+    const bots =
+      document && typeof document.bots === "object" && document.bots !== null && !Array.isArray(document.bots)
+        ? { ...document.bots }
+        : {};
+    const botDocument = bots[routeTarget.botId] && typeof bots[routeTarget.botId] === "object" ? { ...bots[routeTarget.botId] } : {};
+    const routes =
+      botDocument.routes && typeof botDocument.routes === "object" && botDocument.routes !== null && !Array.isArray(botDocument.routes)
+        ? { ...botDocument.routes }
+        : {};
+    routes[routeTarget.externalRouteId] = buildPersistedSetup(setup);
+    botDocument.routes = routes;
+    bots[routeTarget.botId] = botDocument;
+    document.bots = bots;
+  } else {
+    const channels =
+      document && typeof document.channels === "object" && document.channels !== null && !Array.isArray(document.channels)
+        ? { ...document.channels }
+        : {};
+    channels[routeTarget.legacyRouteId] = buildPersistedSetup(setup);
+    document.channels = channels;
+  }
+  await writeConfigDocument(fsModule, pathModule, targetConfigPath, document);
+}
+
+async function removeChannelSetupFromConfig(fsModule, pathModule, targetConfigPath, routeTarget) {
+  const document = await readConfigDocument(fsModule, targetConfigPath);
+  if (routeTarget?.botId) {
+    const bots =
+      document && typeof document.bots === "object" && document.bots !== null && !Array.isArray(document.bots)
+        ? { ...document.bots }
+        : {};
+    const botDocument = bots[routeTarget.botId] && typeof bots[routeTarget.botId] === "object" ? { ...bots[routeTarget.botId] } : {};
+    const routes =
+      botDocument.routes && typeof botDocument.routes === "object" && botDocument.routes !== null && !Array.isArray(botDocument.routes)
+        ? { ...botDocument.routes }
+        : {};
+    delete routes[routeTarget.externalRouteId];
+    botDocument.routes = routes;
+    bots[routeTarget.botId] = botDocument;
+    document.bots = bots;
+  } else {
+    const channels =
+      document && typeof document.channels === "object" && document.channels !== null && !Array.isArray(document.channels)
+        ? { ...document.channels }
+        : {};
+    delete channels[routeTarget.legacyRouteId];
+    if (routeTarget?.repoChannelId && routeTarget.repoChannelId !== routeTarget.legacyRouteId) {
+      delete channels[routeTarget.repoChannelId];
+    }
+    document.channels = channels;
+  }
+  await writeConfigDocument(fsModule, pathModule, targetConfigPath, document);
+}
+
+function buildPersistedSetup(setup) {
+  return {
     cwd: setup.cwd,
     ...(typeof setup.agentId === "string" ? { agentId: setup.agentId } : {}),
     ...(typeof setup.model === "string" ? { model: setup.model } : {})
   };
-
-  document.channels = channels;
-  await writeConfigDocument(fsModule, pathModule, targetConfigPath, document);
-}
-
-async function removeChannelSetupFromConfig(fsModule, pathModule, targetConfigPath, channelId) {
-  const document = await readConfigDocument(fsModule, targetConfigPath);
-  const channels =
-    document && typeof document.channels === "object" && document.channels !== null && !Array.isArray(document.channels)
-      ? { ...document.channels }
-      : {};
-
-  delete channels[channelId];
-  document.channels = channels;
-  await writeConfigDocument(fsModule, pathModule, targetConfigPath, document);
 }
 
 async function readConfigDocument(fsModule, targetConfigPath) {
