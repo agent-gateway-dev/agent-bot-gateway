@@ -196,17 +196,32 @@ export async function buildBridgeRuntimes(deps) {
               ]
             : [])
         ];
-  const [{ buildDiscordRuntime }, { createDiscordPlatform }, { buildFeishuRuntime }, { createFeishuPlatform }] =
-    await Promise.all([
+  const discordBotsForStartup = botsForStartup.filter(
+    (entry) => entry.platform === "discord" && String(entry.auth?.token ?? "").trim()
+  );
+  const feishuBotsForStartup = botsForStartup.filter((entry) => entry.platform === "feishu");
+
+  let buildDiscordRuntime = null;
+  let createDiscordPlatform = null;
+  if (discordBotsForStartup.length > 0) {
+    [{ buildDiscordRuntime }, { createDiscordPlatform }] = await Promise.all([
       import("./buildDiscordRuntime.js"),
-      import("../platforms/discordPlatform.js"),
+      import("../platforms/discordPlatform.js")
+    ]);
+  }
+
+  let buildFeishuRuntime = null;
+  let createFeishuPlatform = null;
+  if (feishuBotsForStartup.length > 0) {
+    [{ buildFeishuRuntime }, { createFeishuPlatform }] = await Promise.all([
       import("./buildFeishuRuntime.js"),
       import("../platforms/feishuPlatform.js")
     ]);
+  }
 
   let primaryDiscordAssigned = false;
   let discordRuntimeAssigned = false;
-  for (const bot of botsForStartup.filter((entry) => entry.platform === "discord" && String(entry.auth?.token ?? "").trim())) {
+  for (const bot of discordBotsForStartup) {
     const discordClient = primaryDiscordAssigned ? await createDiscordClient() : discord;
     primaryDiscordAssigned = true;
     const {
@@ -264,7 +279,7 @@ export async function buildBridgeRuntimes(deps) {
     );
   }
 
-  for (const bot of botsForStartup.filter((entry) => entry.platform === "feishu")) {
+  for (const bot of feishuBotsForStartup) {
     const {
       getHelpText,
       isCommandSupportedForPlatform,
