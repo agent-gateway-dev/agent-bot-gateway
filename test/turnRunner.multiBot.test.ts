@@ -335,4 +335,83 @@ describe("turnRunner multi-bot", () => {
       })
     });
   });
+
+  test("clears mismatched runtime binding before resuming a bot-scoped route", async () => {
+    const harness = createHarness();
+    const clearedBindings: string[] = [];
+    harness.state.clearBinding = (repoChannelId: string) => {
+      clearedBindings.push(repoChannelId);
+    };
+    harness.state.getBinding = (repoChannelId: string) => {
+      if (repoChannelId === "bot:feishu-default:route:123") {
+        return {
+          codexThreadId: "claude-session-1",
+          runtime: "claude",
+          agentId: "claude-default",
+          cwd: "/tmp/repo-a"
+        };
+      }
+      return null;
+    };
+
+    const runner = createTurnRunner({
+      queues: harness.queues,
+      activeTurns: harness.activeTurns,
+      state: harness.state,
+      agentClientRegistry: harness.agentClientRegistry,
+      config: {
+        runtime: "codex",
+        defaultModel: "gpt-5.3-codex",
+        defaultEffort: "medium",
+        approvalPolicy: "never",
+        sandboxMode: "workspace-write",
+        agents: {
+          "claude-default": {
+            runtime: "claude",
+            enabled: true
+          },
+          "codex-default": {
+            runtime: "codex",
+            enabled: true,
+            model: "gpt-5.3-codex"
+          }
+        }
+      },
+      safeReply: harness.safeReply,
+      buildSandboxPolicyForTurn: async () => null,
+      isThreadNotFoundError: () => false,
+      finalizeTurn: harness.finalizeTurn,
+      onTurnReconnectPending: () => {},
+      onActiveTurnsChanged: () => {}
+    });
+
+    runner.enqueuePrompt("bot:feishu-default:route:123", {
+      message: { id: "message-1", channelId: "123" },
+      bot: {
+        botId: "feishu-default",
+        platform: "feishu",
+        runtime: "codex"
+      },
+      setup: {
+        cwd: "/tmp/repo-a",
+        resolvedAgentId: "claude-default"
+      },
+      inputItems: [{ type: "text", text: "hello" }]
+    });
+
+    const seenTracker = await waitUntil(() => harness.activeTurns.has("thread-1"));
+    expect(seenTracker).toBe(true);
+
+    const tracker = harness.activeTurns.get("thread-1");
+    tracker?.resolve("done");
+
+    const queueSettled = await waitUntil(() => !runner.getQueue("bot:feishu-default:route:123").running);
+    expect(queueSettled).toBe(true);
+    expect(clearedBindings).toContain("bot:feishu-default:route:123");
+    expect(harness.requestCalls.some(({ method }) => method === "thread/resume")).toBe(false);
+    expect(harness.requestCalls).toContainEqual({
+      method: "thread/start",
+      params: expect.objectContaining({ cwd: "/tmp/repo-a" })
+    });
+  });
 });

@@ -49,6 +49,26 @@ export function createTurnRunner(deps) {
     };
   }
 
+  function shouldResetExistingBinding(existingBinding, setup, bot = null) {
+    if (!existingBinding) {
+      return false;
+    }
+
+    if (existingBinding?.cwd && path.resolve(existingBinding.cwd) !== path.resolve(setup.cwd)) {
+      return true;
+    }
+
+    if (bot?.botId && existingBinding?.botId && existingBinding.botId !== bot.botId) {
+      return true;
+    }
+
+    if (bot?.runtime && existingBinding?.runtime && existingBinding.runtime !== bot.runtime) {
+      return true;
+    }
+
+    return false;
+  }
+
 
   function enqueuePrompt(repoChannelId, job) {
     const queue = getQueue(repoChannelId);
@@ -271,11 +291,12 @@ export function createTurnRunner(deps) {
   }
 
   async function ensureThreadId(repoChannelId, setup, bot = null) {
-    const existingBinding = state.getBinding(repoChannelId);
+    let existingBinding = state.getBinding(repoChannelId);
     let existingThreadId = existingBinding?.codexThreadId ?? null;
-    if (existingBinding?.cwd && path.resolve(existingBinding.cwd) !== path.resolve(setup.cwd)) {
+    if (shouldResetExistingBinding(existingBinding, setup, bot)) {
       state.clearBinding(repoChannelId);
       await state.save();
+      existingBinding = null;
       existingThreadId = null;
     }
 
@@ -285,6 +306,7 @@ export function createTurnRunner(deps) {
       console.log(`[turnRunner] Clearing temp thread ID ${existingThreadId}, cannot resume`);
       state.clearBinding(repoChannelId);
       await state.save();
+      existingBinding = null;
       existingThreadId = null;
     }
 
@@ -319,9 +341,9 @@ export function createTurnRunner(deps) {
 
     const startParams = { cwd: setup.cwd };
     // Resolve runtime for model filtering
-    const agentId = setup?.resolvedAgentId || setup?.agentId || null;
+    const requestedAgentId = setup?.agentId || setup?.resolvedAgentId || null;
     const runtimeForStart =
-      bot?.runtime === "claude" || bot?.runtime === "codex" ? bot.runtime : resolveRuntimeForAgent(agentId, config);
+      bot?.runtime === "claude" || bot?.runtime === "codex" ? bot.runtime : resolveRuntimeForAgent(requestedAgentId, config);
     const rawModelForStart = setup.resolvedModel ?? setup.model ?? config.defaultModel;
     const isClaudeRuntimeForStart = runtimeForStart === "claude";
     const isCodexDefaultModelForStart = rawModelForStart === "gpt-5.3-codex" || rawModelForStart === "codex-default";
@@ -342,6 +364,8 @@ export function createTurnRunner(deps) {
 
     const result = await requestCodexWithReconnectRetry(() => client.request("thread/start", startParams));
     const threadId = result?.thread?.id;
+    const bindingAgentId =
+      requestedAgentId && resolveRuntimeForAgent(requestedAgentId, config) === runtimeForStart ? requestedAgentId : undefined;
     // For Claude runtime, threadId may be null for new sessions
     // The real session ID will come from system_init notification
     if (!threadId) {
@@ -356,7 +380,7 @@ export function createTurnRunner(deps) {
         repoChannelId,
         cwd: setup.cwd,
         runtime: runtimeForBinding,
-        agentId: agentId || undefined,
+        agentId: bindingAgentId,
         ...buildBindingMetadata(repoChannelId, bot)
       });
       await state.save();
@@ -372,7 +396,7 @@ export function createTurnRunner(deps) {
       repoChannelId,
       cwd: setup.cwd,
       runtime: runtimeForBinding,
-      agentId: agentId || undefined,
+      agentId: bindingAgentId,
       ...buildBindingMetadata(repoChannelId, bot)
     });
     await state.save();

@@ -70,6 +70,7 @@ export function createCommandRouter(deps) {
       enqueuePrompt(context.repoChannelId, {
         inputItems,
         message,
+        bot: context.bot,
         setup: context.setup,
         repoChannelId: context.repoChannelId
       });

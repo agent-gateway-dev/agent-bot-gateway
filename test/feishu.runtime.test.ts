@@ -597,6 +597,106 @@ describe("feishu runtime", () => {
     ]);
   });
 
+  test("passes bot runtime metadata when queueing prompts for the default Feishu bot", async () => {
+    const jobs: Array<{
+      repoChannelId: string;
+      promptText: string;
+      bot?: { botId?: string; runtime?: string; platform?: string };
+    }> = [];
+    const routeId = makeFeishuRouteId("oc_repo_bot_runtime_1");
+
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/tenant_access_token/internal")) {
+        return new Response(JSON.stringify({ code: 0, tenant_access_token: "tenant-token", expire: 7200 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({ code: 0, data: { message_id: "om_reply_bot_runtime_1" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    };
+
+    const runtime = createFeishuRuntime({
+      bot: {
+        botId: "feishu-default",
+        platform: "feishu",
+        runtime: "codex"
+      },
+      config: {
+        defaultModel: "gpt-5.3-codex",
+        sandboxMode: "workspace-write",
+        allowedFeishuUserIds: []
+      },
+      runtimeEnv: {
+        feishuEnabled: true,
+        feishuAppId: "cli_test",
+        feishuAppSecret: "secret",
+        feishuVerificationToken: "",
+        feishuPort: 8788,
+        feishuHost: "127.0.0.1",
+        feishuWebhookPath: "/feishu/events",
+        feishuGeneralChatId: "",
+        feishuGeneralCwd: "/tmp/general",
+        feishuRequireMentionInGroup: false,
+        feishuUnboundChatMode: "open",
+        feishuUnboundChatCwd: "/tmp/open"
+      },
+      getChannelSetups: () => ({}),
+      runManagedRouteCommand: async () => {},
+      getHelpText: () => "help text",
+      isCommandSupportedForPlatform: () => false,
+      handleCommand: async () => {},
+      runtimeAdapters: {
+        buildTurnInputFromMessage: async (_message: unknown, text: string) => [{ type: "text", text }],
+        enqueuePrompt: (
+          repoChannelId: string,
+          job: {
+            inputItems: Array<{ text: string }>;
+            bot?: { botId?: string; runtime?: string; platform?: string };
+          }
+        ) => {
+          jobs.push({ repoChannelId, promptText: job.inputItems[0]?.text ?? "", bot: job.bot });
+        }
+      },
+      safeReply: async () => null
+    });
+
+    await runtime.handleEventPayload({
+      header: {
+        event_id: "evt-bot-runtime-1",
+        event_type: "im.message.receive_v1"
+      },
+      event: {
+        sender: {
+          sender_id: { open_id: "ou_user_bot_runtime_1" },
+          sender_type: "user"
+        },
+        message: {
+          message_id: "om_bot_runtime_1",
+          chat_id: "oc_repo_bot_runtime_1",
+          chat_type: "group",
+          message_type: "text",
+          content: JSON.stringify({ text: "补充 find-skill 和 skill-creator 相关" }),
+          mentions: []
+        }
+      }
+    });
+
+    expect(jobs).toEqual([
+      {
+        repoChannelId: `bot:feishu-default:route:${routeId.replace(/^feishu:/, "")}`,
+        promptText: "补充 find-skill 和 skill-creator 相关",
+        bot: {
+          botId: "feishu-default",
+          runtime: "codex"
+        }
+      }
+    ]);
+  });
+
   test("expands bare numeric replies using the latest numbered bot message", async () => {
     const jobs: Array<{ repoChannelId: string; promptText: string }> = [];
     const routeId = makeFeishuRouteId("oc_repo_quick_reply_1");

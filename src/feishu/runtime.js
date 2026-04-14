@@ -467,6 +467,7 @@ export function createFeishuRuntime(deps) {
     runtimeAdapters.enqueuePrompt(context.repoChannelId, {
       inputItems,
       message: inboundMessage,
+      bot: context.bot,
       setup: context.setup,
       repoChannelId: context.repoChannelId,
       platform: "feishu",
@@ -588,6 +589,7 @@ export function createFeishuRuntime(deps) {
     runtimeAdapters.enqueuePrompt(context.repoChannelId, {
       inputItems,
       message: inboundMessage,
+      bot: context.bot,
       setup: context.setup,
       repoChannelId: context.repoChannelId,
       platform: "feishu",
@@ -647,6 +649,7 @@ export function createFeishuRuntime(deps) {
     runtimeAdapters.enqueuePrompt(context.repoChannelId, {
       inputItems,
       message: inboundMessage,
+      bot: context.bot,
       setup: context.setup,
       repoChannelId: context.repoChannelId,
       platform: "feishu",
