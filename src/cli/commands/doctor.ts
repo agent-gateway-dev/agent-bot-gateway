@@ -108,7 +108,7 @@ async function runConfigIntegrityChecks(configPath: string): Promise<{
   let config;
   try {
     config = await loadConfig(configPath, {
-      defaultModel: "gpt-5.3-codex",
+      defaultModel: "codex-default",
       defaultEffort: "medium"
     });
     checks.push({ name: "config_loadable", ok: true, value: configPath });

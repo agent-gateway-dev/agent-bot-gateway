@@ -130,10 +130,7 @@ export function createTurnRunner(deps) {
         const { client, runtime } = getClientForSetupWithRuntime(job.setup, existingBinding, job.bot);
 
         const rawModel = job.setup.resolvedModel ?? job.setup.model ?? config.defaultModel;
-        // For Claude runtime, don't pass model if it's the codex default (Claude CLI should use its own default)
-        const isClaudeRuntime = runtime === "claude";
-        const isCodexDefaultModel = rawModel === "gpt-5.3-codex" || rawModel === "codex-default";
-        const model = isClaudeRuntime && isCodexDefaultModel ? null : rawModel;
+        const model = normalizeRequestedModelForRuntime(rawModel, runtime);
         const effort = config.defaultEffort;
         const approvalPolicy = normalizeApprovalPolicyForRuntime(config.approvalPolicy, runtime);
         const sandboxMode = job.setup.sandboxMode ?? config.sandboxMode;
@@ -168,7 +165,16 @@ export function createTurnRunner(deps) {
             turnParams.sandboxPolicy = sandboxPolicy;
           }
 
-          await requestCodexWithReconnectRetry(() => client.request("turn/start", turnParams));
+          await requestCodexRequestWithModelFallback(
+            () => client.request("turn/start", turnParams),
+            () => client.request("turn/start", withoutModelParam(turnParams)),
+            {
+              runtime,
+              setup: job.setup,
+              requestedModel: rawModel,
+              operationName: "turn/start"
+            }
+          );
           if (!turnMaxDurationMs) {
             await turn.promise;
             return;
@@ -290,6 +296,20 @@ export function createTurnRunner(deps) {
     }
   }
 
+  async function requestCodexRequestWithModelFallback(requestFn, fallbackRequestFn, options = {}) {
+    try {
+      return await requestCodexWithReconnectRetry(requestFn);
+    } catch (error) {
+      if (!shouldRetryWithoutExplicitModel(error, options.runtime, options.setup, options.requestedModel)) {
+        throw error;
+      }
+      console.warn(
+        `[turnRunner] ${String(options.operationName ?? "request")} failed for model ${String(options.requestedModel ?? "").trim()} and will retry without an explicit model selection.`
+      );
+      return requestCodexWithReconnectRetry(fallbackRequestFn);
+    }
+  }
+
   async function ensureThreadId(repoChannelId, setup, bot = null) {
     let existingBinding = state.getBinding(repoChannelId);
     let existingThreadId = existingBinding?.codexThreadId ?? null;
@@ -345,9 +365,7 @@ export function createTurnRunner(deps) {
     const runtimeForStart =
       bot?.runtime === "claude" || bot?.runtime === "codex" ? bot.runtime : resolveRuntimeForAgent(requestedAgentId, config);
     const rawModelForStart = setup.resolvedModel ?? setup.model ?? config.defaultModel;
-    const isClaudeRuntimeForStart = runtimeForStart === "claude";
-    const isCodexDefaultModelForStart = rawModelForStart === "gpt-5.3-codex" || rawModelForStart === "codex-default";
-    const modelForStart = isClaudeRuntimeForStart && isCodexDefaultModelForStart ? null : rawModelForStart;
+    const modelForStart = normalizeRequestedModelForRuntime(rawModelForStart, runtimeForStart);
     const effort = config.defaultEffort;
     if (modelForStart) {
       startParams.model = modelForStart;
@@ -362,7 +380,16 @@ export function createTurnRunner(deps) {
       startParams.sandbox = sandboxMode;
     }
 
-    const result = await requestCodexWithReconnectRetry(() => client.request("thread/start", startParams));
+    const result = await requestCodexRequestWithModelFallback(
+      () => client.request("thread/start", startParams),
+      () => client.request("thread/start", withoutModelParam(startParams)),
+      {
+        runtime: runtimeForStart,
+        setup,
+        requestedModel: rawModelForStart,
+        operationName: "thread/start"
+      }
+    );
     const threadId = result?.thread?.id;
     const bindingAgentId =
       requestedAgentId && resolveRuntimeForAgent(requestedAgentId, config) === runtimeForStart ? requestedAgentId : undefined;
@@ -569,6 +596,55 @@ function normalizeApprovalPolicyForRuntime(approvalPolicy, runtime) {
     return "never";
   }
   return approvalPolicy;
+}
+
+function normalizeRequestedModelForRuntime(model, runtime) {
+  const normalizedModel = String(model ?? "").trim();
+  if (!normalizedModel) {
+    return null;
+  }
+  if (normalizedModel === "codex-default") {
+    return null;
+  }
+  if (runtime === "claude" && normalizedModel === "gpt-5.3-codex") {
+    return null;
+  }
+  return normalizedModel;
+}
+
+function withoutModelParam(params) {
+  if (!params || typeof params !== "object" || !Object.prototype.hasOwnProperty.call(params, "model")) {
+    return params;
+  }
+  const nextParams = { ...params };
+  delete nextParams.model;
+  return nextParams;
+}
+
+function shouldRetryWithoutExplicitModel(error, runtime, setup, requestedModel) {
+  if (runtime !== "codex") {
+    return false;
+  }
+  if (!isCodexUpgradeRequiredForModelError(error)) {
+    return false;
+  }
+  if (hasExplicitSetupModel(setup)) {
+    return false;
+  }
+  const normalizedModel = String(requestedModel ?? "").trim();
+  return normalizedModel.length > 0;
+}
+
+function hasExplicitSetupModel(setup) {
+  return typeof setup?.model === "string" && setup.model.trim().length > 0;
+}
+
+function isCodexUpgradeRequiredForModelError(error) {
+  const message = String(error?.message ?? "");
+  if (!message) {
+    return false;
+  }
+  return /requires a newer version of codex/i.test(message);
 }
 
 function isTransientReconnectError(message) {

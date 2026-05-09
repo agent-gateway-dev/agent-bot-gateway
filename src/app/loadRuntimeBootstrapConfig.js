@@ -21,7 +21,7 @@ export async function loadRuntimeBootstrapConfig() {
   const runtimeEnv = loadRuntimeEnv();
   const { configPath, statePath, debugLoggingEnabled, discordMessageChunkLimit, feishuMessageChunkLimit } = runtimeEnv;
   const execFileAsync = promisify(execFile);
-  const defaultModel = "gpt-5.3-codex";
+  const defaultModel = "codex-default";
   const defaultEffort = "medium";
   const debugLog = createDebugLog(debugLoggingEnabled);
   const discordMaxMessageLength = discordMessageChunkLimit;

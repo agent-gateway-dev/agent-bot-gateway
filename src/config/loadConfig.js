@@ -4,7 +4,7 @@ import { normalizeBots } from "../bots/normalizeBots.js";
 import { parsePathListEnv as parsePathListEnvFromUtil } from "../utils/pathEnv.js";
 
 export async function loadConfig(filePath, options = {}) {
-  const defaultModel = typeof options.defaultModel === "string" ? options.defaultModel : "gpt-5.3-codex";
+  const defaultModel = typeof options.defaultModel === "string" ? options.defaultModel : "codex-default";
   const defaultEffort = typeof options.defaultEffort === "string" ? options.defaultEffort : "medium";
 
   let parsed = {};

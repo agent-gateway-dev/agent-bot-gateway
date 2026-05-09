@@ -3,7 +3,7 @@ import { loadConfig } from "../../config/loadConfig.js";
 import { isFeishuWebhookTransport } from "../../feishu/transport.js";
 import { resolveCliRuntimePaths } from "../paths.js";
 
-const DEFAULT_MODEL = "gpt-5.3-codex";
+const DEFAULT_MODEL = "codex-default";
 const DEFAULT_EFFORT = "medium";
 
 export async function runCapabilitiesCommand(args: string[], context: CliContext): Promise<CliCommandResult> {

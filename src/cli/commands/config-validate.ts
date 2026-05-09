@@ -6,7 +6,7 @@ export async function runConfigValidateCommand(_args: string[], context: CliCont
     const { loadConfig } = await import("../../config/loadConfig.js");
     const paths = resolveCliRuntimePaths(context.cwd);
     const config = await loadConfig(paths.configPath, {
-      defaultModel: "gpt-5.3-codex",
+      defaultModel: "codex-default",
       defaultEffort: "medium"
     });
     const channels =

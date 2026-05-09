@@ -48,6 +48,12 @@ describe("loadConfig", () => {
     expect(config.autoDiscoverProjects).toBe(true);
   });
 
+  test("uses codex-default when no default model override is provided", async () => {
+    const missingPath = path.join(os.tmpdir(), `dc-bridge-missing-default-${Date.now()}.json`);
+    const config = await loadConfig(missingPath);
+    expect(config.defaultModel).toBe("codex-default");
+  });
+
   test("normalizes channel mappings and trims default model/effort", async () => {
     delete process.env.DISCORD_ALLOWED_USER_IDS;
     delete process.env.CODEX_APPROVAL_POLICY;

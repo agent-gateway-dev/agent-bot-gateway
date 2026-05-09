@@ -106,6 +106,154 @@ function createHarness() {
 }
 
 describe("turnRunner multi-bot", () => {
+  test("retries without model when inherited codex model requires a newer Codex build", async () => {
+    const harness = createHarness();
+    let threadStartCalls = 0;
+    harness.agentClientRegistry.getClient = (runtime: string) => {
+      harness.getClientCalls.push(runtime);
+      return {
+        async request(method: string, params?: Record<string, unknown>) {
+          harness.requestCalls.push({ method, params });
+          if (method === "thread/start") {
+            threadStartCalls += 1;
+            if (threadStartCalls === 1) {
+              throw new Error(
+                "The 'gpt-5.3-codex' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again."
+              );
+            }
+            return { thread: { id: "thread-1" } };
+          }
+          if (method === "turn/start") {
+            return {};
+          }
+          return {};
+        }
+      };
+    };
+
+    const runner = createTurnRunner({
+      queues: harness.queues,
+      activeTurns: harness.activeTurns,
+      state: harness.state,
+      agentClientRegistry: harness.agentClientRegistry,
+      config: {
+        runtime: "codex",
+        defaultModel: "gpt-5.3-codex",
+        defaultEffort: "medium",
+        approvalPolicy: "never",
+        sandboxMode: "workspace-write",
+        agents: {
+          "codex-default": {
+            model: "gpt-5.3-codex",
+            runtime: "codex",
+            enabled: true
+          }
+        }
+      },
+      safeReply: harness.safeReply,
+      buildSandboxPolicyForTurn: async () => null,
+      isThreadNotFoundError: () => false,
+      finalizeTurn: harness.finalizeTurn,
+      onTurnReconnectPending: () => {},
+      onActiveTurnsChanged: () => {}
+    });
+
+    runner.enqueuePrompt("bot:discord-main:route:123", {
+      message: { id: "message-1", channelId: "123" },
+      bot: {
+        botId: "discord-main",
+        platform: "discord",
+        runtime: "codex"
+      },
+      setup: {
+        cwd: "/tmp/repo-a",
+        agentId: "codex-default",
+        resolvedModel: "gpt-5.3-codex"
+      },
+      inputItems: [{ type: "text", text: "hello" }]
+    });
+
+    const seenTracker = await waitUntil(() => harness.activeTurns.has("thread-1"));
+    expect(seenTracker).toBe(true);
+
+    const tracker = harness.activeTurns.get("thread-1");
+    tracker?.resolve("done");
+
+    const queueSettled = await waitUntil(() => !runner.getQueue("bot:discord-main:route:123").running);
+    expect(queueSettled).toBe(true);
+    expect(
+      harness.requestCalls.filter(({ method }) => method === "thread/start").map(({ params }) => params?.model ?? null)
+    ).toEqual(["gpt-5.3-codex", null]);
+  });
+
+  test("does not retry without model when the route explicitly pins the model", async () => {
+    const harness = createHarness();
+    harness.agentClientRegistry.getClient = (runtime: string) => {
+      harness.getClientCalls.push(runtime);
+      return {
+        async request(method: string, params?: Record<string, unknown>) {
+          harness.requestCalls.push({ method, params });
+          if (method === "thread/start") {
+            throw new Error(
+              "The 'gpt-5.3-codex' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again."
+            );
+          }
+          return {};
+        }
+      };
+    };
+
+    const replies: string[] = [];
+    const runner = createTurnRunner({
+      queues: harness.queues,
+      activeTurns: harness.activeTurns,
+      state: harness.state,
+      agentClientRegistry: harness.agentClientRegistry,
+      config: {
+        runtime: "codex",
+        defaultModel: "codex-default",
+        defaultEffort: "medium",
+        approvalPolicy: "never",
+        sandboxMode: "workspace-write"
+      },
+      safeReply: async (_message: unknown, content: string) => {
+        replies.push(content);
+        return {
+          id: "status-1",
+          channel: {
+            id: "123",
+            isTextBased: () => true
+          },
+          async edit() {}
+        };
+      },
+      buildSandboxPolicyForTurn: async () => null,
+      isThreadNotFoundError: () => false,
+      finalizeTurn: harness.finalizeTurn,
+      onTurnReconnectPending: () => {},
+      onActiveTurnsChanged: () => {}
+    });
+
+    runner.enqueuePrompt("bot:discord-main:route:123", {
+      message: { id: "message-1", channelId: "123" },
+      bot: {
+        botId: "discord-main",
+        platform: "discord",
+        runtime: "codex"
+      },
+      setup: {
+        cwd: "/tmp/repo-a",
+        model: "gpt-5.3-codex"
+      },
+      inputItems: [{ type: "text", text: "hello" }]
+    });
+
+    const queueSettled = await waitUntil(() => !runner.getQueue("bot:discord-main:route:123").running);
+    expect(queueSettled).toBe(true);
+    expect(harness.requestCalls.filter(({ method }) => method === "thread/start")).toHaveLength(1);
+    expect(replies.at(-1)).toContain("requires a newer version of Codex");
+  });
+
   test("maps bypass approval to never for codex runtime", async () => {
     const harness = createHarness();
     const runner = createTurnRunner({
